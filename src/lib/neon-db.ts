@@ -1,24 +1,11 @@
 import { prisma } from "@/lib/db";
 import { Prisma } from "@prisma/client";
 
-// Safe SQL template tag polyfill to bridge Vercel v0 Postgres logic to Prisma SQLite
+// SQL template tag executing raw Postgres through the shared Prisma client.
+// (Named neon-db for historical reasons; the connection itself is whatever
+// DATABASE_URL points at — Neon in production.)
 export const sql = async (strings: TemplateStringsArray, ...values: any[]): Promise<any[]> => {
-  const newStrings: string[] = [];
-  
-  for (let i = 0; i < strings.length; i++) {
-    let s = strings[i];
-    // Convert Postgres syntaxes to SQLite locally
-    s = s.replace(/NOW\(\)/g, "CURRENT_TIMESTAMP");
-    // Remove Postgres typecasting (e.g., ::"UserRole", ::date, ::int) which fails in SQLite
-    s = s.replace(/::"\w+"/g, "");
-    s = s.replace(/::\w+/g, "");
-    
-    // SQLite boolean mapping (true -> 1, false -> 0) might be needed implicitly but Prisma queryRaw handles it
-    newStrings.push(s);
-  }
-
-  // Pass it directly nicely into Prisma's SQL tagged template interface
-  const query = new Prisma.Sql(newStrings, values);
+  const query = new Prisma.Sql([...strings], values);
   return await prisma.$queryRaw(query) as any;
 };
 
@@ -35,7 +22,8 @@ export async function findUserByPhone(phone: string) {
   return await prisma.user.findUnique({ where: { phone } });
 }
 
-export async function createUser(email: string | null, passwordHash: string, role: string = "USER", phone: string | null = null) {
+// email is required: the User.email column is NOT NULL in production
+export async function createUser(email: string, passwordHash: string, role: string = "USER", phone: string | null = null) {
   return await prisma.user.create({
     data: {
       email,
