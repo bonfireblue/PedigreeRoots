@@ -1,0 +1,3 @@
+sync
+trigger
+cli deploy

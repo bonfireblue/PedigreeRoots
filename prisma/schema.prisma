@@ -1,0 +1,241 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// SQLite does not support enums, using String instead.
+
+model User {
+  id           String   @id @default(uuid())
+  email        String?  @unique  // Optional - can sign in with phone instead
+  phone        String?  @unique  // Optional - can sign in with email instead
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  role String @default("USER")
+
+  passwordResetTokens PasswordResetToken[]
+
+  // People this user created (auditing/ownership)
+  people Person[] @relation("CreatedPeople")
+
+  // Claiming: exactly one user can claim at most one person node
+  claimedPerson Person? @relation("ClaimedPerson")
+
+  // Family graphs created by this user
+  createdFamilyGraphs FamilyGraph[] @relation("FamilyGraphCreatedBy")
+
+  // Membership + invites + vouches
+  memberships    Membership[]
+  invitedMembers Membership[] @relation("MembershipInvitedBy")
+
+  sentInvitations Invitation[] @relation("InviterInvitations")
+  acceptedInvites Invitation[] @relation("AcceptedByInvitations")
+
+  vouchesGiven    Vouch[] @relation("VouchesGiven")
+  vouchesReceived Vouch[] @relation("VouchesReceived")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
+}
+
+model FamilyGraph {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  name String?
+
+  createdById String
+  createdBy   User   @relation("FamilyGraphCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+
+  people      Person[]
+  memberships Membership[]
+  invitations Invitation[]
+  vouches     Vouch[]
+
+  @@index([createdById])
+}
+
+model Membership {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  userId        String
+  familyGraphId String
+
+  role String @default("MEMBER")
+
+  invitedByUserId String?
+  invitedBy       User?   @relation("MembershipInvitedBy", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  familyGraph FamilyGraph @relation(fields: [familyGraphId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, familyGraphId])
+  @@index([familyGraphId])
+  @@index([userId])
+  @@index([invitedByUserId])
+}
+
+// Invitation - email and phone are both optional (at least one required)
+model Invitation {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  token  String           @unique
+  email  String?          // Optional - can invite by phone only
+  phone  String?          // Optional - can invite by email only
+  status String @default("PENDING")
+
+  familyGraphId String
+  familyGraph   FamilyGraph @relation(fields: [familyGraphId], references: [id], onDelete: Cascade)
+
+  targetPersonId String
+  targetPerson   Person @relation("PersonInvitations", fields: [targetPersonId], references: [id], onDelete: Cascade)
+
+  inviterUserId String
+  inviter       User   @relation("InviterInvitations", fields: [inviterUserId], references: [id], onDelete: Cascade)
+
+  acceptedByUserId String?
+  acceptedBy       User?   @relation("AcceptedByInvitations", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+
+  acceptedAt DateTime?
+  declinedAt DateTime?
+  expiresAt  DateTime?
+
+  @@index([familyGraphId])
+  @@index([targetPersonId])
+  @@index([inviterUserId])
+  @@index([email])
+  @@index([phone])
+}
+
+model Vouch {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  familyGraphId String
+  familyGraph   FamilyGraph @relation(fields: [familyGraphId], references: [id], onDelete: Cascade)
+
+  vouchedByUserId String
+  vouchedBy       User   @relation("VouchesGiven", fields: [vouchedByUserId], references: [id], onDelete: Cascade)
+
+  vouchedUserId String
+  vouchedUser   User   @relation("VouchesReceived", fields: [vouchedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([familyGraphId, vouchedByUserId, vouchedUserId])
+  @@index([familyGraphId])
+  @@index([vouchedByUserId])
+  @@index([vouchedUserId])
+}
+
+model Person {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Name fields
+  firstName String?
+  lastName  String?
+  fullName  String   // Computed from firstName + lastName, or entered directly
+
+  // Life details
+  birthDate       DateTime?
+  deathDate       DateTime?
+  gender          String?   // male, female, other, or null (prefer not to say)
+  grewUpLocation  String?   // Where did you grow up?
+  currentLocation String?   // Where do you live now?
+
+  // Profile / Story
+  bio        String?
+  proudOf    String?   // What are you most proud of?
+  occupation String?   // Career / What do you do?
+  interests  String?   // Hobbies / Interests
+
+  // Legacy fields
+  location String?   // Deprecated - use grewUpLocation or currentLocation
+  photoUrl String?
+
+  // Relationships
+  parents  ParentChild[] @relation("ChildParents")
+  children ParentChild[] @relation("ParentChildren")
+
+  spousesA Spouse[] @relation("SpouseA")
+  spousesB Spouse[] @relation("SpouseB")
+
+deletedAt       DateTime?
+  deletedByUserId String?
+  purgeAfter      DateTime?
+
+  // Privacy
+  isPrivate Boolean @default(false)
+
+  // Ownership / auditing
+  createdById String
+  createdBy   User   @relation("CreatedPeople", fields: [createdById], references: [id], onDelete: Cascade)
+
+  // Family graph ownership
+ familyGraphId String
+familyGraph   FamilyGraph @relation(fields: [familyGraphId], references: [id], onDelete: Cascade)
+
+  // Claiming (exactly one user per node)
+  claimedByUserId String? @unique
+  claimedBy       User?   @relation("ClaimedPerson", fields: [claimedByUserId], references: [id], onDelete: SetNull)
+
+  // Verification status - true if verified by vouch or auto-verified
+  isVerified Boolean @default(false)
+
+  // Inverse for Invitation.targetPerson
+  invitations Invitation[] @relation("PersonInvitations")
+
+  @@index([fullName])
+  @@index([createdById])
+  @@index([isPrivate])
+  @@index([familyGraphId])
+ @@index([familyGraphId, deletedAt])
+  @@index([purgeAfter])
+}
+
+model ParentChild {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  parentId String
+  childId  String
+
+  parent Person @relation("ParentChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  child  Person @relation("ChildParents", fields: [childId], references: [id], onDelete: Cascade)
+
+  @@unique([parentId, childId])
+  @@index([parentId])
+  @@index([childId])
+}
+
+model Spouse {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  aId String
+  bId String
+
+  a Person @relation("SpouseA", fields: [aId], references: [id], onDelete: Cascade)
+  b Person @relation("SpouseB", fields: [bId], references: [id], onDelete: Cascade)
+
+  @@unique([aId, bId])
+  @@index([aId])
+  @@index([bId])
+}

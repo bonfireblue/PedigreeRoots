@@ -1,0 +1,46 @@
+{
+  "name": "family-tree",
+  "version": "0.1.2",
+  "private": true,
+  "scripts": {
+    "postinstall": "prisma generate",
+    "dev": "next dev",
+    "build": "next build",
+    "vercel-build": "prisma generate && prisma migrate deploy && next build",
+    "start": "next start",
+    "lint": "next lint",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:migrate:dev": "prisma migrate dev",
+    "seed": "tsx prisma/seed.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:relationships": "vitest run tests/relationshipRules.unit.test.ts",
+    "test:invitations": "vitest run tests/invitationRules.unit.test.ts",
+    "test:tree": "vitest run tests/treeMap.test.ts tests/personVisibility.test.ts",
+    "test:claim": "vitest run tests/inviteClaimFlow.test.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.2",
+    "argon2": "^0.44.0",
+    "dotenv": "^17.3.1",
+    "next": "16.1.6",
+    "next-auth": "^4.24.13",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "resend": "^6.9.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitest/coverage-v8": "^4.0.18",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.6",
+    "prisma": "^6.19.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5",
+    "vitest": "^4.0.18"
+  }
+}
