@@ -50,6 +50,14 @@ export function isVerifiedRole(role: string) {
   return role === "FOUNDER" || role === "TRUSTED" || role === "ADMIN";
 }
 
+// Vouch bootstrap rule (Phase 1d, Bon's decision): the inviter of a person
+// normally cannot also vouch for them (verification should involve a second
+// family member), but FOUNDERs are exempt — otherwise a founder's first
+// invitees could never be verified once auto-verification stops applying.
+export function canVouchDespiteBeingInviter(voucherMembershipRole: string): boolean {
+  return voucherMembershipRole === "FOUNDER";
+}
+
 export async function computeCanInvite(params: {
   meId: string;
   familyGraphId: string;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   PersonError,
   assertBirthBeforeDeath,
+  canDeletePerson,
   canEditPerson,
   canViewPerson,
   normalizeBio,
@@ -93,7 +94,7 @@ describe("personRules", () => {
     });
   });
 
-  describe("canEditPerson", () => {
+  describe("canEditPerson (open-editing model)", () => {
     it("allows claimer to edit claimed node", () => {
       expect(
         canEditPerson("claimer-1", "MEMBER", {
@@ -112,9 +113,18 @@ describe("personRules", () => {
       ).toBe(false);
     });
 
-    it("allows verified role to edit unclaimed node", () => {
+    it("blocks any non-claimer member from editing a claimed node", () => {
       expect(
-        canEditPerson("admin-1", "ADMIN", {
+        canEditPerson("someone-else", "MEMBER", {
+          createdById: "creator-1",
+          claimedByUserId: "claimer-1",
+        })
+      ).toBe(false);
+    });
+
+    it("allows any member to edit a stranger's unclaimed node", () => {
+      expect(
+        canEditPerson("someone-else", "MEMBER", {
           createdById: "creator-1",
           claimedByUserId: null,
         })
@@ -130,9 +140,47 @@ describe("personRules", () => {
       ).toBe(true);
     });
 
-    it("blocks normal member from editing another user's unclaimed node", () => {
+    it("allows verified role to edit unclaimed node", () => {
       expect(
-        canEditPerson("someone-else", "MEMBER", {
+        canEditPerson("admin-1", "ADMIN", {
+          createdById: "creator-1",
+          claimedByUserId: null,
+        })
+      ).toBe(true);
+    });
+
+    it("blocks a non-member (no membership role) from editing", () => {
+      expect(
+        canEditPerson("outsider", "", {
+          createdById: "creator-1",
+          claimedByUserId: null,
+        })
+      ).toBe(false);
+    });
+  });
+
+  describe("canDeletePerson", () => {
+    it("allows any member to delete an unclaimed node", () => {
+      expect(
+        canDeletePerson("someone-else", "MEMBER", {
+          createdById: "creator-1",
+          claimedByUserId: null,
+        })
+      ).toBe(true);
+    });
+
+    it("blocks deleting a claimed node for everyone", () => {
+      expect(
+        canDeletePerson("claimer-1", "ADMIN", {
+          createdById: "creator-1",
+          claimedByUserId: "claimer-1",
+        })
+      ).toBe(false);
+    });
+
+    it("blocks non-members", () => {
+      expect(
+        canDeletePerson("outsider", "", {
           createdById: "creator-1",
           claimedByUserId: null,
         })

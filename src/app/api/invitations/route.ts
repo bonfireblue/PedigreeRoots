@@ -16,6 +16,7 @@ import {
   normalizePhone,
 } from "@/lib/invitationRules";
 import { sendInvitationEmail } from "@/lib/email";
+import { logChanges } from "@/lib/changeLog";
 
 export async function POST(req: Request) {
   try {
@@ -99,11 +100,35 @@ export async function POST(req: Request) {
     const invitationId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7);
 
-    // Use raw SQL to bypass Prisma's cached schema (email column is now nullable)
-    await sql`
-      INSERT INTO "Invitation" (id, token, email, phone, "familyGraphId", "targetPersonId", "inviterUserId", "expiresAt", "createdAt")
-      VALUES (${invitationId}, ${token}, ${email}, ${phone}, ${membership.familyGraphId}, ${targetPersonId}, ${me.id}, ${expiresAt}, NOW())
-    `;
+    await prisma.$transaction(async (tx) => {
+      await tx.invitation.create({
+        data: {
+          id: invitationId,
+          token,
+          email,
+          phone,
+          familyGraphId: membership.familyGraphId,
+          targetPersonId,
+          inviterUserId: me.id,
+          expiresAt,
+        },
+      });
+
+      await logChanges(tx, [
+        {
+          familyGraphId: membership.familyGraphId,
+          actorUserId: me.id,
+          targetPersonId,
+          targetType: "INVITATION",
+          targetId: invitationId,
+          action: "CREATE",
+          field: null,
+          // Contact details stay out of the log on purpose — the feed is
+          // visible to the whole graph.
+          newValue: email ? "email invite" : "phone invite",
+        },
+      ]);
+    });
 
     const invitation = { id: invitationId, token, email, phone, targetPersonId, expiresAt };
 

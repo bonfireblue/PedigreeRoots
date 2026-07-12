@@ -3,6 +3,7 @@ import argon2 from "argon2";
 import { prisma } from "@/lib/db";
 import { sql } from "@/lib/neon-db";
 import { readJson } from "@/lib/body";
+import { logChanges } from "@/lib/changeLog";
 import {
   InvitationError,
   assertNonEmptyToken,
@@ -198,6 +199,31 @@ export async function POST(req: Request) {
           status: "REVOKED",
         },
       });
+
+      await logChanges(tx, [
+        {
+          familyGraphId: freshInvite.familyGraphId,
+          actorUserId: userId,
+          targetPersonId: freshInvite.targetPersonId,
+          targetType: "INVITATION",
+          targetId: freshInvite.id,
+          action: "UPDATE",
+          field: "status",
+          oldValue: "PENDING",
+          newValue: "ACCEPTED",
+        },
+        {
+          familyGraphId: freshInvite.familyGraphId,
+          actorUserId: userId,
+          targetPersonId: freshInvite.targetPersonId,
+          targetType: "PERSON",
+          targetId: freshInvite.targetPersonId,
+          action: "UPDATE",
+          field: "claimedByUserId",
+          oldValue: null,
+          newValue: userId,
+        },
+      ]);
 
       return { claimedPersonId: freshInvite.targetPersonId };
     });

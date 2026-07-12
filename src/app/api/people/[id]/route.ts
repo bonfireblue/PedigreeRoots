@@ -6,9 +6,11 @@ import { requireMe } from "@/lib/authz";
 import {
   PersonError,
   buildPersonPatch,
+  canDeletePerson,
   canEditPerson,
   canViewPerson,
 } from "@/lib/personRules";
+import { logChanges, logPersonUpdate } from "@/lib/changeLog";
 
 type Ctx = {
   params: Promise<{ id: string }>;
@@ -201,13 +203,6 @@ export async function PATCH(req: Request, ctx: Ctx) {
 
     const existing = await prisma.person.findUnique({
       where: { id },
-      select: {
-        id: true,
-        createdById: true,
-        claimedByUserId: true,
-        familyGraphId: true,
-        deletedAt: true,
-      },
     });
 
     if (!existing || existing.deletedAt) {
@@ -223,9 +218,21 @@ export async function PATCH(req: Request, ctx: Ctx) {
 
     const data = buildPersonPatch(parsed.json);
 
-    const updated = await prisma.person.update({
-      where: { id },
-      data,
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.person.update({
+        where: { id },
+        data,
+      });
+
+      await logPersonUpdate(tx, {
+        familyGraphId: existing.familyGraphId,
+        actorUserId: me.id,
+        personId: id,
+        before: existing as unknown as Record<string, unknown>,
+        patch: data,
+      });
+
+      return row;
     });
 
     return NextResponse.json({
@@ -270,6 +277,7 @@ export async function DELETE(req: Request, ctx: Ctx) {
       where: { id },
       select: {
         id: true,
+        fullName: true,
         createdById: true,
         claimedByUserId: true,
         familyGraphId: true,
@@ -281,9 +289,9 @@ export async function DELETE(req: Request, ctx: Ctx) {
       return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
     }
 
-    // Only the creator can delete a person
-    if (existing.createdById !== me.id && !me.isAdmin) {
-      return NextResponse.json({ error: "ONLY_CREATOR_CAN_DELETE" }, { status: 403 });
+    const membership = await getMembershipOr403(me.id, existing.familyGraphId);
+    if (!membership && !me.isAdmin) {
+      return NextResponse.json({ error: "NO_MEMBERSHIP" }, { status: 403 });
     }
 
     // Cannot delete a claimed person (someone who has accepted their profile)
@@ -291,14 +299,35 @@ export async function DELETE(req: Request, ctx: Ctx) {
       return NextResponse.json({ error: "CANNOT_DELETE_CLAIMED_PERSON" }, { status: 403 });
     }
 
+    // Any member of the graph may soft-delete an unclaimed person
+    if (!me.isAdmin && !canDeletePerson(me.id, membership?.role ?? "", existing)) {
+      return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
+    }
+
     // Soft delete: set deletedAt and deletedByUserId
-    await prisma.person.update({
-      where: { id },
-      data: {
-        deletedAt: new Date(),
-        deletedByUserId: me.id,
-        purgeAfter: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
-      },
+    await prisma.$transaction(async (tx) => {
+      await tx.person.update({
+        where: { id },
+        data: {
+          deletedAt: new Date(),
+          deletedByUserId: me.id,
+          purgeAfter: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+        },
+      });
+
+      await logChanges(tx, [
+        {
+          familyGraphId: existing.familyGraphId,
+          actorUserId: me.id,
+          targetPersonId: id,
+          targetType: "PERSON",
+          targetId: id,
+          action: "DELETE",
+          field: null,
+          oldValue: existing.fullName,
+          newValue: null,
+        },
+      ]);
     });
 
     return NextResponse.json({ success: true });

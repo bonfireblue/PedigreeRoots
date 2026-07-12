@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   RelationshipError,
+  assertCanEditRelationship,
   assertNonEmptyIds,
   assertNotSelf,
+  assertSameFamilyGraph,
   normalizeSpousePair,
 } from "@/lib/relationshipRules";
 
@@ -29,6 +31,53 @@ describe("relationshipRules basic unit logic", () => {
     it("rejects null or undefined ids", () => {
       expect(() => assertNonEmptyIds(["p1", null])).toThrow(RelationshipError);
       expect(() => assertNonEmptyIds(["p1", undefined])).toThrow(RelationshipError);
+    });
+  });
+
+  describe("assertCanEditRelationship (open-editing model)", () => {
+    const member = { id: "user-1", email: "u1@example.com", isAdmin: false };
+    const admin = { id: "admin-1", email: "admin@example.com", isAdmin: true };
+
+    it("allows any member of the graph, regardless of who created the people", () => {
+      expect(() => assertCanEditRelationship(member, "MEMBER")).not.toThrow();
+    });
+
+    it("allows founders and trusted members", () => {
+      expect(() => assertCanEditRelationship(member, "FOUNDER")).not.toThrow();
+      expect(() => assertCanEditRelationship(member, "TRUSTED")).not.toThrow();
+    });
+
+    it("blocks non-members", () => {
+      expect(() => assertCanEditRelationship(member, null)).toThrow(RelationshipError);
+      try {
+        assertCanEditRelationship(member, null);
+      } catch (error) {
+        expect((error as RelationshipError).status).toBe(403);
+      }
+    });
+
+    it("allows global admins even without membership", () => {
+      expect(() => assertCanEditRelationship(admin, null)).not.toThrow();
+    });
+  });
+
+  describe("assertSameFamilyGraph (cross-graph links stay blocked)", () => {
+    it("allows two people in the same graph", () => {
+      expect(() =>
+        assertSameFamilyGraph({ familyGraphId: "g1" }, { familyGraphId: "g1" })
+      ).not.toThrow();
+    });
+
+    it("blocks people in different graphs", () => {
+      expect(() =>
+        assertSameFamilyGraph({ familyGraphId: "g1" }, { familyGraphId: "g2" })
+      ).toThrow(RelationshipError);
+    });
+
+    it("blocks people without a graph", () => {
+      expect(() =>
+        assertSameFamilyGraph({ familyGraphId: null }, { familyGraphId: "g2" })
+      ).toThrow(RelationshipError);
     });
   });
 
