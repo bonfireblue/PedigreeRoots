@@ -4,6 +4,8 @@ import { prisma } from "@/lib/db";
 import { rateLimit, clientKey } from "@/lib/rateLimit";
 import { readJson } from "@/lib/body";
 import { requireMe } from "@/lib/authz";
+import { canEditPerson } from "@/lib/personRules";
+import { logPersonUpdate } from "@/lib/changeLog";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -74,7 +76,16 @@ export async function GET(req: Request, ctx: Ctx) {
       siblingsList = siblings;
     }
 
-    const canEdit = person.claimedByUserId === me.id || person.createdById === me.id;
+    const membership = await prisma.membership.findUnique({
+      where: {
+        userId_familyGraphId: {
+          userId: me.id,
+          familyGraphId: person.familyGraphId,
+        },
+      },
+      select: { role: true },
+    });
+    const canEdit = membership ? canEditPerson(me.id, membership.role, person) : false;
 
     return NextResponse.json({
       person: {
@@ -119,8 +130,20 @@ export async function PATCH(req: Request, ctx: Ctx) {
       return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
     }
 
-    const canEdit = person.claimedByUserId === me.id || person.createdById === me.id;
-    if (!canEdit) {
+    const membership = await prisma.membership.findUnique({
+      where: {
+        userId_familyGraphId: {
+          userId: me.id,
+          familyGraphId: person.familyGraphId,
+        },
+      },
+      select: { role: true },
+    });
+    if (!membership) {
+      return NextResponse.json({ error: "NO_MEMBERSHIP" }, { status: 403 });
+    }
+
+    if (!canEditPerson(me.id, membership.role, person)) {
       return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
     }
 
@@ -131,9 +154,21 @@ export async function PATCH(req: Request, ctx: Ctx) {
     if (body.deathDate !== undefined) updateData.deathDate = body.deathDate ? new Date(body.deathDate) : null;
     if (body.isPrivate !== undefined) updateData.isPrivate = body.isPrivate;
 
-    const updated = await prisma.person.update({
-      where: { id },
-      data: updateData,
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.person.update({
+        where: { id },
+        data: updateData,
+      });
+
+      await logPersonUpdate(tx, {
+        familyGraphId: person.familyGraphId,
+        actorUserId: me.id,
+        personId: id,
+        before: person as unknown as Record<string, unknown>,
+        patch: updateData,
+      });
+
+      return row;
     });
 
     return NextResponse.json({ person: updated });

@@ -3,6 +3,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { readJson } from "@/lib/body";
+import { canVouchDespiteBeingInviter } from "@/lib/invitationRules";
+import { logChanges } from "@/lib/changeLog";
 
 export async function POST(req: Request) {
   try {
@@ -82,7 +84,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "ALREADY_VERIFIED" }, { status: 400 });
     }
 
-    // Check if the voucher was the original inviter - they cannot vouch for their own invitees
+    // Check if the voucher was the original inviter - they cannot vouch for
+    // their own invitees, unless they are the graph's FOUNDER (Phase 1d).
     const wasInviter = await prisma.invitation.findFirst({
       where: {
         targetPersonId: targetPersonId,
@@ -92,7 +95,7 @@ export async function POST(req: Request) {
       select: { id: true },
     });
 
-    if (wasInviter) {
+    if (wasInviter && !canVouchDespiteBeingInviter(membership.role)) {
       return NextResponse.json({ error: "CANNOT_VOUCH_OWN_INVITEE" }, { status: 403 });
     }
 
@@ -100,7 +103,7 @@ export async function POST(req: Request) {
     await prisma.$transaction(async (tx) => {
       // Create vouch record - Vouch links users, not persons
       // vouchedUserId is the user who owns the target person
-      await tx.vouch.create({
+      const vouch = await tx.vouch.create({
         data: {
           vouchedByUserId: me.id,
           vouchedUserId: targetUserId,
@@ -113,6 +116,20 @@ export async function POST(req: Request) {
         where: { id: targetPersonId },
         data: { isVerified: true },
       });
+
+      await logChanges(tx, [
+        {
+          familyGraphId: membership.familyGraphId,
+          actorUserId: me.id,
+          targetPersonId: targetPersonId,
+          targetType: "VOUCH",
+          targetId: vouch.id,
+          action: "CREATE",
+          field: "isVerified",
+          oldValue: "false",
+          newValue: "true",
+        },
+      ]);
     });
 
     return NextResponse.json({ ok: true, verifiedPersonId: targetPersonId });

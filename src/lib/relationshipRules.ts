@@ -38,13 +38,14 @@ export function assertNotSelf(aId: string, bId: string, code = "INVALID_RELATION
 
 type PersonForRelationship = {
   id: string;
+  fullName: string;
   createdById: string;
   familyGraphId: string | null;
 };
 
 export async function getTwoPeopleForRelationship(aId: string, bId: string): Promise<{ a: PersonForRelationship; b: PersonForRelationship }> {
   const rows = await sql`
-    SELECT id, "createdById", "familyGraphId"
+    SELECT id, "fullName", "createdById", "familyGraphId"
     FROM "Person"
     WHERE id IN (${aId}, ${bId}) AND "deletedAt" IS NULL
   `;
@@ -59,16 +60,27 @@ export async function getTwoPeopleForRelationship(aId: string, bId: string): Pro
   return { a, b };
 }
 
-export function assertCanEditRelationship(
-  me: Me,
-  a: { createdById: string },
-  b: { createdById: string }
-) {
-  const canEdit = me.isAdmin || (a.createdById === me.id && b.createdById === me.id);
+// Open-editing model: any member of the graph both people belong to may
+// create/remove links between them. Callers pass the actor's membership role
+// in that graph (null/undefined = not a member). Relationship links never
+// touch a claimed person's claimer-locked fields, so claiming does not
+// restrict linking. Cross-graph safety is assertSameFamilyGraph's job.
+export function assertCanEditRelationship(me: Me, membershipRole: string | null | undefined) {
+  const canEdit = me.isAdmin || Boolean(membershipRole);
 
   if (!canEdit) {
     throw new RelationshipError("FORBIDDEN", 403);
   }
+}
+
+// Fetch the actor's membership role in a graph (null if not a member).
+export async function getMembershipRole(userId: string, familyGraphId: string): Promise<string | null> {
+  const rows = await sql`
+    SELECT role FROM "Membership"
+    WHERE "userId" = ${userId} AND "familyGraphId" = ${familyGraphId}
+    LIMIT 1
+  `;
+  return rows.length > 0 ? String(rows[0].role) : null;
 }
 
 export function assertSameFamilyGraph(

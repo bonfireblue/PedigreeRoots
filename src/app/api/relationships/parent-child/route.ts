@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql } from "@/lib/neon-db";
+import { prisma } from "@/lib/db";
 import { requireMe } from "@/lib/authz";
 import { rateLimit, clientKey } from "@/lib/rateLimit";
 import { readJson } from "@/lib/body";
@@ -14,9 +15,11 @@ import {
   assertNotSelf,
   assertSameFamilyGraph,
   getExactParentChildOrThrow,
+  getMembershipRole,
   getParentChildDeleteWarnings,
   getTwoPeopleForRelationship,
 } from "@/lib/relationshipRules";
+import { logChanges, type ChangeLogEntry } from "@/lib/changeLog";
 
 export async function POST(req: Request) {
   try {
@@ -49,49 +52,70 @@ export async function POST(req: Request) {
 
     const { a: parent, b: child } = await getTwoPeopleForRelationship(parentId, childId);
 
-    assertCanEditRelationship(me, parent, child);
     assertSameFamilyGraph(parent, child);
+    const membershipRole = await getMembershipRole(me.id, parent.familyGraphId!);
+    assertCanEditRelationship(me, membershipRole);
 
     await assertNoDuplicateParentChild(parentId, childId);
     await assertChildHasAtMostOneOtherParent(childId);
     await assertNoSpouseConflictWithParentChild(parentId, childId);
     await assertNoParentChildCycle(parentId, childId);
 
-    const relId = crypto.randomUUID();
-    await sql`
-      INSERT INTO "ParentChild" (id, "parentId", "childId", "createdAt")
-      VALUES (${relId}, ${parentId}, ${childId}, NOW())
-    `;
-
     // Auto-link the child to all the parent's spouses (married couples share children)
     const spouseRows = await sql`
-      SELECT "aId" as "spouseId" FROM "Spouse" WHERE "bId" = ${parentId}
-      UNION
-      SELECT "bId" as "spouseId" FROM "Spouse" WHERE "aId" = ${parentId}
+      SELECT p.id as "spouseId", p."fullName" as "spouseName"
+      FROM "Person" p
+      WHERE p."deletedAt" IS NULL AND p.id IN (
+        SELECT "aId" FROM "Spouse" WHERE "bId" = ${parentId}
+        UNION
+        SELECT "bId" FROM "Spouse" WHERE "aId" = ${parentId}
+      )
     `;
-    
-    for (const spouse of spouseRows) {
-      // Check if relationship already exists
-      const existing = await sql`
-        SELECT id FROM "ParentChild" 
-        WHERE "parentId" = ${spouse.spouseId} AND "childId" = ${childId}
-      `;
-      if (existing.length === 0) {
-        const spouseRelId = crypto.randomUUID();
-        await sql`
-          INSERT INTO "ParentChild" (id, "parentId", "childId", "createdAt")
-          VALUES (${spouseRelId}, ${spouse.spouseId}, ${childId}, NOW())
-        `;
+
+    const relationship = await prisma.$transaction(async (tx) => {
+      const rel = await tx.parentChild.create({
+        data: { parentId, childId },
+      });
+
+      const entries: ChangeLogEntry[] = [
+        {
+          familyGraphId: parent.familyGraphId!,
+          actorUserId: me.id,
+          targetPersonId: childId,
+          targetType: "PARENT_CHILD",
+          targetId: rel.id,
+          action: "CREATE",
+          field: "parent",
+          newValue: parent.fullName,
+        },
+      ];
+
+      for (const spouse of spouseRows) {
+        const existing = await tx.parentChild.findUnique({
+          where: { parentId_childId: { parentId: spouse.spouseId, childId } },
+        });
+        if (!existing) {
+          const spouseRel = await tx.parentChild.create({
+            data: { parentId: spouse.spouseId, childId },
+          });
+          entries.push({
+            familyGraphId: parent.familyGraphId!,
+            actorUserId: me.id,
+            targetPersonId: childId,
+            targetType: "PARENT_CHILD",
+            targetId: spouseRel.id,
+            action: "CREATE",
+            field: "parent",
+            newValue: String(spouse.spouseName),
+          });
+        }
       }
-    }
 
-    const rows = await sql`
-      SELECT id, "parentId", "childId", "createdAt"
-      FROM "ParentChild"
-      WHERE id = ${relId}
-    `;
+      await logChanges(tx, entries);
+      return rel;
+    });
 
-    return NextResponse.json({ relationship: rows[0] }, { status: 201 });
+    return NextResponse.json({ relationship }, { status: 201 });
   } catch (error) {
     if (error instanceof RelationshipError) {
       return NextResponse.json({ error: error.code }, { status: error.status });
@@ -132,8 +156,9 @@ export async function DELETE(req: Request) {
     assertNonEmptyIds([parentId, childId]);
 
     const { a: parent, b: child } = await getTwoPeopleForRelationship(parentId, childId);
-    assertCanEditRelationship(me, parent, child);
     assertSameFamilyGraph(parent, child);
+    const membershipRole = await getMembershipRole(me.id, parent.familyGraphId!);
+    assertCanEditRelationship(me, membershipRole);
 
     const relationship = await getExactParentChildOrThrow(parentId, childId);
     const warnings = await getParentChildDeleteWarnings(parentId, childId);
@@ -149,9 +174,24 @@ export async function DELETE(req: Request) {
       );
     }
 
-    await sql`
-      DELETE FROM "ParentChild" WHERE "parentId" = ${parentId} AND "childId" = ${childId}
-    `;
+    await prisma.$transaction(async (tx) => {
+      await tx.parentChild.delete({
+        where: { parentId_childId: { parentId, childId } },
+      });
+
+      await logChanges(tx, [
+        {
+          familyGraphId: parent.familyGraphId!,
+          actorUserId: me.id,
+          targetPersonId: childId,
+          targetType: "PARENT_CHILD",
+          targetId: String(relationship.id),
+          action: "DELETE",
+          field: "parent",
+          oldValue: parent.fullName,
+        },
+      ]);
+    });
 
     return NextResponse.json(
       {

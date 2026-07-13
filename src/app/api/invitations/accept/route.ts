@@ -9,6 +9,7 @@ import {
   getPendingInvitationOrThrow,
   normalizeEmail,
 } from "@/lib/invitationRules";
+import { logChanges } from "@/lib/changeLog";
 
 export async function POST(req: Request) {
   try {
@@ -160,6 +161,31 @@ export async function POST(req: Request) {
           status: "REVOKED",
         },
       });
+
+      await logChanges(tx, [
+        {
+          familyGraphId: freshInvite.familyGraphId,
+          actorUserId: me.id,
+          targetPersonId: freshInvite.targetPersonId,
+          targetType: "INVITATION",
+          targetId: freshInvite.id,
+          action: "UPDATE",
+          field: "status",
+          oldValue: "PENDING",
+          newValue: "ACCEPTED",
+        },
+        {
+          familyGraphId: freshInvite.familyGraphId,
+          actorUserId: me.id,
+          targetPersonId: freshInvite.targetPersonId,
+          targetType: "PERSON",
+          targetId: freshInvite.targetPersonId,
+          action: "UPDATE",
+          field: "claimedByUserId",
+          oldValue: null,
+          newValue: me.id,
+        },
+      ]);
 
       return { claimedPersonId: freshInvite.targetPersonId };
     });

@@ -1,9 +1,12 @@
 // Member info API - Uses raw SQL queries
 import { NextResponse } from "next/server";
 import { sql } from "@/lib/neon-db";
+import { prisma } from "@/lib/db";
 import { rateLimit, clientKey } from "@/lib/rateLimit";
 import { readJson } from "@/lib/body";
 import { requireMe } from "@/lib/authz";
+import { canEditPerson } from "@/lib/personRules";
+import { logPersonUpdate } from "@/lib/changeLog";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -18,8 +21,8 @@ export async function GET(req: Request, ctx: Ctx) {
     const { id } = await ctx.params;
 
     const personRows = await sql`
-      SELECT id, "fullName", gender, "birthDate", "deathDate", "isPrivate", 
-             "isVerified", "claimedByUserId", "createdById", "photoUrl"
+      SELECT id, "fullName", gender, "birthDate", "deathDate", "isPrivate",
+             "isVerified", "claimedByUserId", "createdById", "photoUrl", "familyGraphId"
       FROM "Person"
       WHERE id = ${id} AND "deletedAt" IS NULL
     `;
@@ -29,6 +32,17 @@ export async function GET(req: Request, ctx: Ctx) {
     }
 
     const person = personRows[0];
+
+    const membership = await prisma.membership.findUnique({
+      where: { userId_familyGraphId: { userId: me.id, familyGraphId: person.familyGraphId } },
+      select: { role: true },
+    });
+    const canEdit = membership
+      ? canEditPerson(me.id, membership.role, {
+          createdById: person.createdById,
+          claimedByUserId: person.claimedByUserId,
+        })
+      : false;
 
     const parentRows = await sql`
       SELECT p.id, p."fullName", p."isPrivate", p."claimedByUserId"
@@ -80,7 +94,7 @@ export async function GET(req: Request, ctx: Ctx) {
       children: childrenRows,
       spouses: spouseRows,
       siblings: siblingRows,
-      canEdit: person.claimedByUserId === me.id || person.createdById === me.id,
+      canEdit,
       canVouch: person.claimedByUserId && person.claimedByUserId !== me.id && !person.isVerified,
     });
   } catch (error) {
@@ -103,51 +117,58 @@ export async function PATCH(req: Request, ctx: Ctx) {
 
     const body = parsed.json;
 
-    const personRows = await sql`
-      SELECT id, "claimedByUserId", "createdById"
-      FROM "Person"
-      WHERE id = ${id} AND "deletedAt" IS NULL
-    `;
-
-    if (personRows.length === 0) {
+    const person = await prisma.person.findUnique({ where: { id } });
+    if (!person || person.deletedAt) {
       return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
     }
 
-    const person = personRows[0];
+    const membership = await prisma.membership.findUnique({
+      where: {
+        userId_familyGraphId: {
+          userId: me.id,
+          familyGraphId: person.familyGraphId,
+        },
+      },
+      select: { role: true },
+    });
+    if (!membership) {
+      return NextResponse.json({ error: "NO_MEMBERSHIP" }, { status: 403 });
+    }
 
-    if (person.claimedByUserId !== me.id && person.createdById !== me.id) {
+    if (!canEditPerson(me.id, membership.role, person)) {
       return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
     }
 
-    // Build update object with only defined fields
-    const hasUpdates = 
-      body.fullName !== undefined ||
-      body.gender !== undefined ||
-      body.birthDate !== undefined ||
-      body.deathDate !== undefined ||
-      body.isPrivate !== undefined ||
-      body.photoUrl !== undefined;
+    const updateData: Record<string, unknown> = {};
+    if (body.fullName !== undefined) updateData.fullName = body.fullName;
+    if (body.gender !== undefined) updateData.gender = body.gender ?? null;
+    if (body.birthDate !== undefined) updateData.birthDate = body.birthDate ? new Date(body.birthDate) : null;
+    if (body.deathDate !== undefined) updateData.deathDate = body.deathDate ? new Date(body.deathDate) : null;
+    if (body.isPrivate !== undefined) updateData.isPrivate = body.isPrivate ?? false;
+    if (body.photoUrl !== undefined) updateData.photoUrl = body.photoUrl ?? null;
 
-    if (!hasUpdates) {
+    if (Object.keys(updateData).length === 0) {
       return NextResponse.json({ error: "NO_UPDATES" }, { status: 400 });
     }
 
-    // Use individual updates with COALESCE to only update provided fields
-    const updated = await sql`
-      UPDATE "Person" 
-      SET 
-        "fullName" = COALESCE(${body.fullName !== undefined ? body.fullName : null}, "fullName"),
-        "gender" = CASE WHEN ${body.gender !== undefined} THEN ${body.gender ?? null} ELSE "gender" END,
-        "birthDate" = CASE WHEN ${body.birthDate !== undefined} THEN ${body.birthDate || null}::timestamp ELSE "birthDate" END,
-        "deathDate" = CASE WHEN ${body.deathDate !== undefined} THEN ${body.deathDate || null}::timestamp ELSE "deathDate" END,
-        "isPrivate" = CASE WHEN ${body.isPrivate !== undefined} THEN ${body.isPrivate ?? false} ELSE "isPrivate" END,
-        "photoUrl" = CASE WHEN ${body.photoUrl !== undefined} THEN ${body.photoUrl ?? null} ELSE "photoUrl" END,
-        "updatedAt" = NOW()
-      WHERE id = ${id}
-      RETURNING *
-    `;
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.person.update({
+        where: { id },
+        data: updateData,
+      });
 
-    return NextResponse.json({ person: updated[0] });
+      await logPersonUpdate(tx, {
+        familyGraphId: person.familyGraphId,
+        actorUserId: me.id,
+        personId: id,
+        before: person as unknown as Record<string, unknown>,
+        patch: updateData,
+      });
+
+      return row;
+    });
+
+    return NextResponse.json({ person: updated });
   } catch (error) {
     console.error("PATCH /api/member-info/[id] error:", error);
     return NextResponse.json({ error: "INTERNAL_SERVER_ERROR" }, { status: 500 });

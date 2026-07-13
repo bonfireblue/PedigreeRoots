@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql } from "@/lib/neon-db";
+import { prisma } from "@/lib/db";
 import { requireMe } from "@/lib/authz";
 import { rateLimit, clientKey } from "@/lib/rateLimit";
 import { readJson } from "@/lib/body";
@@ -13,10 +14,12 @@ import {
   assertNotSelf,
   assertSameFamilyGraph,
   getExactSpouseOrThrow,
+  getMembershipRole,
   getSpouseDeleteWarnings,
   getTwoPeopleForRelationship,
   normalizeSpousePair,
 } from "@/lib/relationshipRules";
+import { logChanges, type ChangeLogEntry } from "@/lib/changeLog";
 
 export async function POST(req: Request) {
   try {
@@ -49,8 +52,9 @@ export async function POST(req: Request) {
 
     const { a, b } = await getTwoPeopleForRelationship(aId, bId);
 
-    assertCanEditRelationship(me, a, b);
     assertSameFamilyGraph(a, b);
+    const membershipRole = await getMembershipRole(me.id, a.familyGraphId!);
+    assertCanEditRelationship(me, membershipRole);
 
     await assertNoDuplicateSpouse(aId, bId);
     await assertNoParentChildConflictWithSpouse(aId, bId);
@@ -58,54 +62,60 @@ export async function POST(req: Request) {
 
     const [xId, yId] = normalizeSpousePair(aId, bId);
 
-    const relId = crypto.randomUUID();
-    await sql`
-      INSERT INTO "Spouse" (id, "aId", "bId", "createdAt")
-      VALUES (${relId}, ${xId}, ${yId}, NOW())
-    `;
+    const relationship = await prisma.$transaction(async (tx) => {
+      const rel = await tx.spouse.create({
+        data: { aId: xId, bId: yId },
+      });
 
-    // Auto-link each spouse's children to the other spouse (married couples share children)
-    // Get children of person A and link them to person B
-    const childrenOfA = await sql`
-      SELECT "childId" FROM "ParentChild" WHERE "parentId" = ${aId}
-    `;
-    for (const child of childrenOfA) {
-      const existingB = await sql`
-        SELECT id FROM "ParentChild" WHERE "parentId" = ${bId} AND "childId" = ${child.childId}
-      `;
-      if (existingB.length === 0) {
-        const childRelId = crypto.randomUUID();
-        await sql`
-          INSERT INTO "ParentChild" (id, "parentId", "childId", "createdAt")
-          VALUES (${childRelId}, ${bId}, ${child.childId}, NOW())
-        `;
-      }
-    }
+      const entries: ChangeLogEntry[] = [
+        {
+          familyGraphId: a.familyGraphId!,
+          actorUserId: me.id,
+          targetPersonId: aId,
+          targetType: "SPOUSE",
+          targetId: rel.id,
+          action: "CREATE",
+          field: "spouse",
+          newValue: b.fullName,
+        },
+      ];
 
-    // Get children of person B and link them to person A
-    const childrenOfB = await sql`
-      SELECT "childId" FROM "ParentChild" WHERE "parentId" = ${bId}
-    `;
-    for (const child of childrenOfB) {
-      const existingA = await sql`
-        SELECT id FROM "ParentChild" WHERE "parentId" = ${aId} AND "childId" = ${child.childId}
-      `;
-      if (existingA.length === 0) {
-        const childRelId = crypto.randomUUID();
-        await sql`
-          INSERT INTO "ParentChild" (id, "parentId", "childId", "createdAt")
-          VALUES (${childRelId}, ${aId}, ${child.childId}, NOW())
-        `;
-      }
-    }
+      // Auto-link each spouse's children to the other spouse (married couples share children)
+      const linkChildren = async (fromId: string, toId: string, toName: string) => {
+        const children = await tx.parentChild.findMany({
+          where: { parentId: fromId },
+          select: { childId: true },
+        });
+        for (const child of children) {
+          const existing = await tx.parentChild.findUnique({
+            where: { parentId_childId: { parentId: toId, childId: child.childId } },
+          });
+          if (!existing) {
+            const childRel = await tx.parentChild.create({
+              data: { parentId: toId, childId: child.childId },
+            });
+            entries.push({
+              familyGraphId: a.familyGraphId!,
+              actorUserId: me.id,
+              targetPersonId: child.childId,
+              targetType: "PARENT_CHILD",
+              targetId: childRel.id,
+              action: "CREATE",
+              field: "parent",
+              newValue: toName,
+            });
+          }
+        }
+      };
 
-    const rows = await sql`
-      SELECT id, "aId", "bId", "createdAt"
-      FROM "Spouse"
-      WHERE id = ${relId}
-    `;
+      await linkChildren(aId, bId, b.fullName);
+      await linkChildren(bId, aId, a.fullName);
 
-    return NextResponse.json({ relationship: rows[0] }, { status: 201 });
+      await logChanges(tx, entries);
+      return rel;
+    });
+
+    return NextResponse.json({ relationship }, { status: 201 });
   } catch (error) {
     if (error instanceof RelationshipError) {
       return NextResponse.json({ error: error.code }, { status: error.status });
@@ -146,8 +156,9 @@ export async function DELETE(req: Request) {
     assertNonEmptyIds([aId, bId]);
 
     const { a, b } = await getTwoPeopleForRelationship(aId, bId);
-    assertCanEditRelationship(me, a, b);
     assertSameFamilyGraph(a, b);
+    const membershipRole = await getMembershipRole(me.id, a.familyGraphId!);
+    assertCanEditRelationship(me, membershipRole);
 
     const relationship = await getExactSpouseOrThrow(aId, bId);
     const warnings = await getSpouseDeleteWarnings(relationship.aId, relationship.bId);
@@ -163,9 +174,24 @@ export async function DELETE(req: Request) {
       );
     }
 
-    await sql`
-      DELETE FROM "Spouse" WHERE "aId" = ${relationship.aId} AND "bId" = ${relationship.bId}
-    `;
+    await prisma.$transaction(async (tx) => {
+      await tx.spouse.delete({
+        where: { aId_bId: { aId: relationship.aId, bId: relationship.bId } },
+      });
+
+      await logChanges(tx, [
+        {
+          familyGraphId: a.familyGraphId!,
+          actorUserId: me.id,
+          targetPersonId: String(relationship.aId),
+          targetType: "SPOUSE",
+          targetId: String(relationship.id),
+          action: "DELETE",
+          field: "spouse",
+          oldValue: relationship.aId === aId ? b.fullName : a.fullName,
+        },
+      ]);
+    });
 
     return NextResponse.json(
       {

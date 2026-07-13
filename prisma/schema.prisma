@@ -192,6 +192,26 @@ model Passcode {
   createdAt    DateTime? @default(now()) @db.Timestamp(6)
 }
 
+// Audit trail: one row per mutation (person updates get one row per changed
+// field). No foreign keys on purpose — log rows must survive deletion of the
+// things they describe. String columns instead of enums to keep values open.
+model ChangeLog {
+  id             String   @id @default(uuid())
+  familyGraphId  String
+  actorUserId    String
+  targetPersonId String?
+  targetType     String // PERSON | PARENT_CHILD | SPOUSE | INVITATION | VOUCH
+  targetId       String
+  action         String // CREATE | UPDATE | DELETE | RESTORE
+  field          String?
+  oldValue       String?
+  newValue       String?
+  createdAt      DateTime @default(now())
+
+  @@index([familyGraphId, createdAt])
+  @@index([targetPersonId])
+}
+
 enum GraphRole {
   FOUNDER
   TRUSTED

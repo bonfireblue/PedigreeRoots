@@ -64,3 +64,16 @@ Side note on relationship POSTs: the "auto-link children to spouses" side effect
 ### Test baseline
 
 `pnpm vitest run`: **7 files, 58 tests, all passing** (untouched). `personRules.test.ts` and `relationshipRules.unit.test.ts` test the shared rule functions — i.e., the *intended* policy — which is exactly what Phase 1 will deliberately change.
+
+---
+
+## Phase 1 — implementation notes (2026-07-13, `phase-1-open-editing` branch)
+
+- Open editing + ChangeLog + activity feed + vouch bootstrap implemented per spec. Notes on judgment calls:
+  - **All five person-mutation routes now enforce `canEditPerson`** (people/[id], save-profile, profile/[id], person-detail/[id], member-info/[id]) with a graph-membership check — the loosened rules are meaningless if the side doors stay open. member-info PATCH was rewritten from COALESCE raw SQL to a Prisma update so it can diff fields for the log.
+  - **save-profile input validation left lenient deliberately** (no buildPersonPatch normalization) — it is the live UI save path and tightening it risks breaking the editor; flagging rather than changing. Also: save-profile maps `story` → `bio` even though production has a separate `story` column; left as-is (changing it silently moves user data).
+  - **Relationship auto-link side effects** (spouse's children etc.) now run in the same transaction as the primary link and produce their own ChangeLog rows. They still bypass the cycle/max-2-parents integrity asserts (pre-existing; noted Phase 0).
+  - **people POST bootstrap** (user with no graph creates first person): per Bon's 1d decision the created person is auto-claimed + verified for the founder, but only when the graph was just created AND the user has no claimed person anywhere (claims are globally unique per user).
+  - **Invitation contact details are kept out of ChangeLog** (`newValue` is just "email invite"/"phone invite") — the feed is visible to the whole graph.
+  - The **read-side cross-graph leak** on `person-detail`/`profile`/`member-info` GETs (Phase 0 finding) is NOT fixed in this phase — it's a read-path change, queued as a decision/follow-up rather than smuggled into the permissions diff.
+  - The stale "raw SQL to bypass Prisma's cached schema" workaround in invitations POST was removed (schema now matches prod), making the invite INSERT + log transactional.

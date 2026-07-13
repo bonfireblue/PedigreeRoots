@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { sql } from "@/lib/neon-db";
+import { prisma } from "@/lib/db";
 import { requireMe } from "@/lib/authz";
 import { rateLimit, clientKey } from "@/lib/rateLimit";
 import { readJson } from "@/lib/body";
+import { logChanges } from "@/lib/changeLog";
 
 function normalizeFullName(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -26,6 +28,7 @@ async function getOrCreatePrimaryMembership(userId: string) {
     return {
       familyGraphId: existingRows[0].familyGraphId,
       role: existingRows[0].role,
+      created: false,
     };
   }
 
@@ -46,6 +49,7 @@ async function getOrCreatePrimaryMembership(userId: string) {
   return {
     familyGraphId: graphId,
     role: "FOUNDER",
+    created: true,
   };
 }
 
@@ -163,20 +167,46 @@ export async function POST(req: Request) {
     // If the user has no graph yet, bootstrap one automatically.
     const membership = await getOrCreatePrimaryMembership(me.id);
 
-    const personId = crypto.randomUUID();
+    // Vouch bootstrap (Bon's decision): when a graph is created via this
+    // path, the first person the founder adds is themselves — claim it and
+    // mark it verified so the founder can vouch for invitees. Skipped if the
+    // user already has a claimed person (claims are one per user).
+    let claimForFounder = false;
+    if (membership.created) {
+      const claimed = await sql`
+        SELECT id FROM "Person" WHERE "claimedByUserId" = ${me.id} LIMIT 1
+      `;
+      claimForFounder = claimed.length === 0;
+    }
 
-    await sql`
-      INSERT INTO "Person" (id, "fullName", "firstName", "lastName", "isPrivate", "createdById", "familyGraphId", "createdAt", "updatedAt")
-      VALUES (${personId}, ${fullName}, ${firstName}, ${lastName}, ${isPrivate}, ${me.id}, ${membership.familyGraphId}, NOW(), NOW())
-    `;
+    const person = await prisma.$transaction(async (tx) => {
+      const row = await tx.person.create({
+        data: {
+          fullName,
+          firstName,
+          lastName,
+          isPrivate,
+          createdById: me.id,
+          familyGraphId: membership.familyGraphId,
+          ...(claimForFounder ? { claimedByUserId: me.id, isVerified: true } : {}),
+        },
+      });
 
-    const personRows = await sql`
-      SELECT id, "fullName", "firstName", "lastName", "createdAt", "isPrivate", "claimedByUserId", "familyGraphId"
-      FROM "Person"
-      WHERE id = ${personId}
-    `;
+      await logChanges(tx, [
+        {
+          familyGraphId: membership.familyGraphId,
+          actorUserId: me.id,
+          targetPersonId: row.id,
+          targetType: "PERSON",
+          targetId: row.id,
+          action: "CREATE",
+          field: null,
+          newValue: row.fullName,
+        },
+      ]);
 
-    const person = personRows[0];
+      return row;
+    });
 
     return NextResponse.json(
       {
@@ -190,7 +220,7 @@ export async function POST(req: Request) {
           claimedByUserId: person.claimedByUserId,
           familyGraphId: person.familyGraphId,
         },
-        bootstrappedGraph: membership.role === "FOUNDER",
+        bootstrappedGraph: membership.created,
       },
       { status: 201 }
     );

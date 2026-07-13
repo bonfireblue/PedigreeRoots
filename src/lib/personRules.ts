@@ -48,17 +48,26 @@ export function canViewPerson(
   return false;
 }
 
+// Open-editing model (accountability over prevention): any member of the
+// person's FamilyGraph may edit any UNCLAIMED person. Callers must have
+// already verified the actor's membership in that graph — the membershipRole
+// parameter exists as proof of that lookup, not for role gating.
 export function canEditPerson(meId: string, membershipRole: string, row: PersonEditRow) {
-  // Claimed node: only the claimer can edit
+  // Claimed node: only the claimer can edit (invariant — no admin override)
   if (row.claimedByUserId) {
     return row.claimedByUserId === meId;
   }
 
-  // Unclaimed node: verified roles can edit any unclaimed node
-  if (isVerifiedRole(membershipRole)) return true;
+  // Unclaimed node: any member of the graph may edit
+  return Boolean(membershipRole);
+}
 
-  // Otherwise only creator can edit
-  return row.createdById === meId;
+// Any member may soft-delete an unclaimed person; claimed persons are
+// undeletable through this path for everyone (including admins). Hard delete
+// (purge) remains an admin-only concern outside member routes.
+export function canDeletePerson(meId: string, membershipRole: string, row: PersonEditRow) {
+  if (row.claimedByUserId) return false;
+  return Boolean(membershipRole);
 }
 
 export function normalizeTrimmedString(

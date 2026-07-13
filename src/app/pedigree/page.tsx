@@ -1057,6 +1057,23 @@ const relTitle =
                 ) : null}
               </div>
 
+              <a
+                href="/activity"
+                style={{
+                  borderRadius: 12,
+                  border: "1px solid #d1d5db",
+                  padding: "11px 14px",
+                  background: "#ffffff",
+                  color: "#111827",
+                  textDecoration: "none",
+                  fontWeight: 600,
+                  fontSize: 14,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Activity
+              </a>
+
               </div>
           </div>
 
