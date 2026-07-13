@@ -66,8 +66,8 @@ export async function POST(req: Request) {
 
     // Mark the passcode as used
     await sql`
-      UPDATE "Passcode" 
-      SET "usedByUserId" = ${newUser.id}, "usedAt" = NOW()
+      UPDATE "Passcode"
+      SET "usedByUserId" = ${newUser.id}::uuid, "usedAt" = NOW()
       WHERE code = ${passcode}
     `;
 
