@@ -196,6 +196,10 @@ export default function PedigreePage() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [invitePhone, setInvitePhone] = useState("");
   const [inviteBusy, setInviteBusy] = useState(false);
+  // Phone invite delivered via the inviter's own messaging app; keep the link
+  // around as a copyable fallback
+  const [phoneInviteLink, setPhoneInviteLink] = useState<{ url: string; phone: string; smsUrl: string } | null>(null);
+  const [inviteLinkCopied, setInviteLinkCopied] = useState(false);
   const [vouchBusy, setVouchBusy] = useState(false);
   const [showInviteConfirm, setShowInviteConfirm] = useState(false);
 
@@ -753,25 +757,25 @@ setEditFirstName(detail.person.firstName ?? "");
       
       const inviteUrl = data.inviteUrl;
       const personName = personDetail?.person.fullName ?? "";
-      
-      // If phone number provided, open SMS app with pre-filled message
+
+      // Phone invites are delivered by the inviter themselves: open their own
+      // messaging app pre-filled (no SMS provider involved), and keep the link
+      // on screen as a fallback for devices without one.
       if (hasPhone && inviteUrl) {
-        const smsMessage = `You've been invited to join ${personName}'s family tree on Pedigree Roots! When you sign up, use this phone number (not your email). Click here to accept: ${inviteUrl}`;
-        const smsUrl = `sms:${invitePhone.replace(/\D/g, "")}?body=${encodeURIComponent(smsMessage)}`;
+        const smsMessage =
+          lang === "vi"
+            ? `Mình đã thêm bạn vào cây gia đình trên Pedigree Roots với tên ${personName}. Nhấn vào đây để xem và nhận hồ sơ của bạn: ${inviteUrl}`
+            : `I added you to our family tree on Pedigree Roots as ${personName}. Tap here to see it and claim your profile: ${inviteUrl}`;
+        // "?&body=" is the form both iOS and Android accept
+        const smsUrl = `sms:+${phoneDigits}?&body=${encodeURIComponent(smsMessage)}`;
+        setPhoneInviteLink({ url: inviteUrl, phone: invitePhone, smsUrl });
         window.open(smsUrl, "_self");
       }
-      
+
       // Clear inputs
       setInviteEmail("");
       setInvitePhone("");
-      
-      // Only show success popup if email was sent (no phone)
-      // If phone was provided, SMS app handles it
-      if (hasEmail && !hasPhone) {
-        // Email sent - no need to show link popup
-        // The email contains the link
-      }
-      
+
       await loadTree(selectedId);
     } finally {
       setInviteBusy(false);
@@ -1742,6 +1746,52 @@ const relTitle =
                       >
                         {inviteBusy ? t.sendingInvite : t.sendInvite}
                       </button>
+
+                      {phoneInviteLink && (
+                        <div
+                          style={{
+                            border: "1px solid #a7f3d0",
+                            background: "rgba(34, 197, 94, 0.06)",
+                            borderRadius: 12,
+                            padding: 12,
+                            display: "grid",
+                            gap: 8,
+                            fontSize: 13,
+                          }}
+                        >
+                          <div style={{ fontWeight: 700, color: "#065f46" }}>
+                            {lang === "vi"
+                              ? `Đã tạo lời mời cho ${phoneInviteLink.phone}. Gửi qua tin nhắn của bạn:`
+                              : `Invite created for ${phoneInviteLink.phone}. Send it from your own messages:`}
+                          </div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <a href={phoneInviteLink.smsUrl} style={{ ...actionButtonStyle(true), fontSize: 13, textDecoration: "none" }}>
+                              {lang === "vi" ? "Mở ứng dụng tin nhắn" : "Open messages app"}
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void navigator.clipboard?.writeText(phoneInviteLink.url).then(() => {
+                                  setInviteLinkCopied(true);
+                                  setTimeout(() => setInviteLinkCopied(false), 2000);
+                                });
+                              }}
+                              style={{ ...actionButtonStyle(false), fontSize: 13 }}
+                            >
+                              {inviteLinkCopied
+                                ? lang === "vi" ? "Đã sao chép!" : "Copied!"
+                                : lang === "vi" ? "Sao chép liên kết" : "Copy link"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setPhoneInviteLink(null)}
+                              style={{ ...actionButtonStyle(false), fontSize: 13 }}
+                            >
+                              {lang === "vi" ? "Đóng" : "Done"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ) : null}

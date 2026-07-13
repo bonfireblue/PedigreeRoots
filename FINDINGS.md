@@ -101,3 +101,13 @@ Side note on relationship POSTs: the "auto-link children to spouses" side effect
 - **3d Per-field privacy**: `Person.fieldVisibility` JSONB. Controllable fields: `birthDate`, `currentLocation`, `grewUpLocation`, `location` (the app has no phone/email person-fields). Claimer-only writes enforced in `people/[id]` PATCH; **every** Person-serializing read path audited: `people/[id]` GET, `tree`, `person-detail`, `profile`, `member-info` now apply `applyFieldVisibility`; the search routes return no controllable fields. Unclaimed profiles ignore fieldVisibility by design (only claimers own privacy).
 - Note: the auto-link side effects (spouse's children) intentionally create untyped (`null`) ParentChild rows — inferring "step" would be guessing.
 - Pre-existing quirk observed, not fixed: `people/[id]` GET previously never returned `currentLocation` at all; it now does (subject to privacy).
+
+---
+
+## Follow-ups per Bon's decisions (2026-07-13, `phase-4-followups` branch)
+
+- **SMS invites (decision #1)**: no provider — the existing user-sent flow (open the inviter's own messaging app pre-filled) is the mechanism, now polished: iOS/Android-compatible `sms:+<digits>?&body=` URI, message copy updated to the gap framing (the old copy told invitees to sign up with their phone number, which contradicted the passwordless flow), and an on-screen "Open messages app / Copy link" fallback panel for desktop.
+- **Cross-graph read leak fixed (decision #3)**: `person-detail/[id]`, `profile/[id]`, `member-info/[id]` GETs now require graph membership, gate the main person through `canViewPerson` (private-profile rules), and filter relative lists the same way `people/[id]` GET always did. Trust-model invariant #3 now holds on every read path.
+- **save-profile validation (decision #4)**: now runs the same `personRules` normalizers as `people/[id]` PATCH (lengths, date parsing, birth-before-death, photo-URL allowlist, and a new `normalizeGender`), while keeping this route's `story`→`bio` mapping and null-clears-field semantics so the live editor behaves identically on valid input.
+- **First-10 auto-verify kept (decision #5)**, passcode/passwordless asymmetry confirmed intended (decision #7) — no changes.
+- **Neon dev branch (decision #2)**: blocked on interactive auth — `npx neonctl auth` needs a browser login only Bon can do. Once authed: `npx neonctl branches create --name dev` and put its connection string in a local-only env (e.g. `.env.local`, gitignored) as `DATABASE_URL`.

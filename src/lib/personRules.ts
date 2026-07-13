@@ -196,6 +196,13 @@ export function normalizeInterests(value: unknown) {
   return normalizeTrimmedString(value, "INVALID_INTERESTS", 500, true);
 }
 
+export function normalizeGender(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  if (value === "male" || value === "female" || value === "other") return value;
+  throw new PersonError("INVALID_GENDER", 400);
+}
+
 export function normalizeOptionalDate(value: unknown, fieldCode: string): Date | null | undefined {
   if (value === undefined) return undefined;
   if (value === null || value === "") return null;
