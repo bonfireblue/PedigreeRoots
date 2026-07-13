@@ -3,6 +3,7 @@ import {
   PersonError,
   applyFieldVisibility,
   normalizeFieldVisibility,
+  normalizeGender,
 } from "@/lib/personRules";
 import {
   RelationshipError,
@@ -42,6 +43,25 @@ describe("relationship types (Phase 3c)", () => {
     expect(normalizeRelationshipDate(null)).toBeNull();
     expect(normalizeRelationshipDate(undefined)).toBeUndefined();
     expect(() => normalizeRelationshipDate("not-a-date")).toThrow(RelationshipError);
+  });
+});
+
+describe("normalizeGender (save-profile validation)", () => {
+  it("accepts the documented values", () => {
+    expect(normalizeGender("male")).toBe("male");
+    expect(normalizeGender("female")).toBe("female");
+    expect(normalizeGender("other")).toBe("other");
+  });
+
+  it("null/empty clears, undefined = no change", () => {
+    expect(normalizeGender(null)).toBeNull();
+    expect(normalizeGender("")).toBeNull();
+    expect(normalizeGender(undefined)).toBeUndefined();
+  });
+
+  it("rejects anything else", () => {
+    expect(() => normalizeGender("attack-helicopter'; DROP TABLE")).toThrow(PersonError);
+    expect(() => normalizeGender(42)).toThrow(PersonError);
   });
 });
 

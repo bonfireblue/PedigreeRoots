@@ -2,7 +2,22 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { rateLimit, clientKey } from "@/lib/rateLimit";
 import { requireMe } from "@/lib/authz";
-import { canEditPerson } from "@/lib/personRules";
+import {
+  PersonError,
+  assertBirthBeforeDeath,
+  canEditPerson,
+  normalizeBio,
+  normalizeFirstName,
+  normalizeFullName,
+  normalizeGender,
+  normalizeGrewUpLocation,
+  normalizeInterests,
+  normalizeLastName,
+  normalizeOccupation,
+  normalizeOptionalDate,
+  normalizePhotoUrl,
+  normalizeProudOf,
+} from "@/lib/personRules";
 import { logPersonUpdate } from "@/lib/changeLog";
 
 export async function POST(request: Request) {
@@ -55,19 +70,47 @@ export async function POST(request: Request) {
       if (source) scribeSourceId = source.id;
     }
 
-    const updateData: any = {};
-    if (firstName !== undefined) updateData.firstName = firstName;
-    if (lastName !== undefined) updateData.lastName = lastName;
-    if (fullName !== undefined) updateData.fullName = fullName;
-    if (gender !== undefined) updateData.gender = gender;
-    if (birthDate !== undefined) updateData.birthDate = birthDate ? new Date(birthDate) : null;
-    if (deathDate !== undefined) updateData.deathDate = deathDate ? new Date(deathDate) : null;
-    if (grewUpLocation !== undefined) updateData.grewUpLocation = grewUpLocation;
-    if (occupation !== undefined) updateData.occupation = occupation;
-    if (proudOf !== undefined) updateData.proudOf = proudOf;
-    if (story !== undefined) updateData.bio = story; // schema uses 'bio'
-    if (interests !== undefined) updateData.interests = interests;
-    if (photoUrl !== undefined) updateData.photoUrl = photoUrl;
+    // Same validation as /api/people/[id] PATCH, keeping this route's field
+    // mapping (story -> bio) intact
+    const updateData: Record<string, unknown> = {};
+    try {
+      const vFirstName = normalizeFirstName(firstName);
+      const vLastName = normalizeLastName(lastName);
+      const vFullName = normalizeFullName(fullName);
+      const vGender = normalizeGender(gender);
+      const vBirthDate = normalizeOptionalDate(birthDate, "INVALID_BIRTH_DATE");
+      const vDeathDate = normalizeOptionalDate(deathDate, "INVALID_DEATH_DATE");
+      const vGrewUp = normalizeGrewUpLocation(grewUpLocation);
+      const vOccupation = normalizeOccupation(occupation);
+      const vProudOf = normalizeProudOf(proudOf);
+      const vStory = normalizeBio(story);
+      const vInterests = normalizeInterests(interests);
+      const vPhotoUrl = normalizePhotoUrl(photoUrl);
+
+      assertBirthBeforeDeath(vBirthDate ?? undefined, vDeathDate ?? undefined);
+
+      if (vFirstName !== undefined) updateData.firstName = vFirstName;
+      if (vLastName !== undefined) updateData.lastName = vLastName;
+      if (vFullName !== undefined) updateData.fullName = vFullName;
+      if (vGender !== undefined) updateData.gender = vGender;
+      if (vBirthDate !== undefined) updateData.birthDate = vBirthDate;
+      if (vDeathDate !== undefined) updateData.deathDate = vDeathDate;
+      if (vGrewUp !== undefined) updateData.grewUpLocation = vGrewUp;
+      if (vOccupation !== undefined) updateData.occupation = vOccupation;
+      if (vProudOf !== undefined) updateData.proudOf = vProudOf;
+      if (vStory !== undefined) updateData.bio = vStory; // schema uses 'bio'
+      if (vInterests !== undefined) updateData.interests = vInterests;
+      if (vPhotoUrl !== undefined) updateData.photoUrl = vPhotoUrl;
+    } catch (e) {
+      if (e instanceof PersonError) {
+        return NextResponse.json({ error: e.code }, { status: e.status });
+      }
+      throw e;
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return NextResponse.json({ error: "NO_VALID_FIELDS" }, { status: 400 });
+    }
 
     const updated = await prisma.$transaction(async (tx) => {
       const row = await tx.person.update({

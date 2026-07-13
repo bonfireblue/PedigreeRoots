@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db";
 import { rateLimit, clientKey } from "@/lib/rateLimit";
 import { readJson } from "@/lib/body";
 import { requireMe } from "@/lib/authz";
-import { applyFieldVisibility, canEditPerson } from "@/lib/personRules";
+import { applyFieldVisibility, canEditPerson, canViewPerson } from "@/lib/personRules";
 import { logPersonUpdate } from "@/lib/changeLog";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -33,14 +33,36 @@ export async function GET(req: Request, ctx: Ctx) {
       return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
     }
 
-    const parentsList = person.parents.map((r) => ({
+    // Graph-scoping (trust-model invariant #3): only members of this
+    // person's graph may read them
+    const membership = await prisma.membership.findUnique({
+      where: {
+        userId_familyGraphId: {
+          userId: me.id,
+          familyGraphId: person.familyGraphId,
+        },
+      },
+      select: { role: true },
+    });
+    if (!membership) {
+      return NextResponse.json({ error: "NO_MEMBERSHIP" }, { status: 403 });
+    }
+
+    if (!canViewPerson(me.id, me.isAdmin, membership.role, person)) {
+      return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
+    }
+
+    const canSee = (row: { isPrivate: boolean; createdById: string; claimedByUserId: string | null }) =>
+      canViewPerson(me.id, me.isAdmin, membership.role, row);
+
+    const parentsList = person.parents.filter((r) => canSee(r.parent)).map((r) => ({
       id: r.parent.id,
       fullName: r.parent.fullName,
       isPrivate: r.parent.isPrivate,
       claimedByUserId: r.parent.claimedByUserId,
     }));
 
-    const childrenList = person.children.map((r) => ({
+    const childrenList = person.children.filter((r) => canSee(r.child)).map((r) => ({
       id: r.child.id,
       fullName: r.child.fullName,
       isPrivate: r.child.isPrivate,
@@ -48,13 +70,13 @@ export async function GET(req: Request, ctx: Ctx) {
     }));
 
     const spousesList = [
-      ...person.spousesA.map((r) => ({
+      ...person.spousesA.filter((r) => canSee(r.b)).map((r) => ({
         id: r.b.id,
         fullName: r.b.fullName,
         isPrivate: r.b.isPrivate,
         claimedByUserId: r.b.claimedByUserId,
       })),
-      ...person.spousesB.map((r) => ({
+      ...person.spousesB.filter((r) => canSee(r.a)).map((r) => ({
         id: r.a.id,
         fullName: r.a.fullName,
         isPrivate: r.a.isPrivate,
@@ -71,21 +93,12 @@ export async function GET(req: Request, ctx: Ctx) {
           deletedAt: null,
           parents: { some: { parentId: { in: parentIds } } },
         },
-        select: { id: true, fullName: true, isPrivate: true, claimedByUserId: true },
+        select: { id: true, fullName: true, isPrivate: true, claimedByUserId: true, createdById: true },
       });
-      siblingsList = siblings;
+      siblingsList = siblings.filter(canSee).map(({ createdById: _omit, ...rest }) => rest);
     }
 
-    const membership = await prisma.membership.findUnique({
-      where: {
-        userId_familyGraphId: {
-          userId: me.id,
-          familyGraphId: person.familyGraphId,
-        },
-      },
-      select: { role: true },
-    });
-    const canEdit = membership ? canEditPerson(me.id, membership.role, person) : false;
+    const canEdit = canEditPerson(me.id, membership.role, person);
 
     const visiblePerson = applyFieldVisibility(person as unknown as Record<string, unknown> & { claimedByUserId?: string | null }, me.id, me.isAdmin) as typeof person;
 
