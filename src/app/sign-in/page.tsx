@@ -13,6 +13,37 @@ export default function SignInPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [magicSent, setMagicSent] = useState(false);
+  const [magicLoading, setMagicLoading] = useState(false);
+
+  async function sendMagicLink() {
+    setError(null);
+    const email = emailOrPhone.trim().toLowerCase();
+    if (!email || !email.includes("@")) {
+      setError(
+        lang === "vi"
+          ? "Nhập email của bạn ở ô trên trước."
+          : "Type your email in the box above first."
+      );
+      return;
+    }
+
+    setMagicLoading(true);
+    try {
+      const res = await fetch("/api/auth/magic-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (res.ok) {
+        setMagicSent(true);
+      } else {
+        setError(lang === "vi" ? "Không gửi được liên kết." : "We couldn't send the link. Try again.");
+      }
+    } finally {
+      setMagicLoading(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -128,6 +159,53 @@ export default function SignInPage() {
           {loading ? t.signingIn : t.signIn}
         </button>
       </form>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "20px 0" }}>
+        <div style={{ flex: 1, height: 1, background: "#ddd" }} />
+        <span style={{ fontSize: 13, opacity: 0.6 }}>{lang === "vi" ? "hoặc" : "or"}</span>
+        <div style={{ flex: 1, height: 1, background: "#ddd" }} />
+      </div>
+
+      {magicSent ? (
+        <div
+          style={{
+            padding: 16,
+            borderRadius: 12,
+            border: "1px solid #a7f3d0",
+            background: "rgba(34, 197, 94, 0.08)",
+            fontSize: 16,
+            lineHeight: 1.5,
+          }}
+        >
+          {lang === "vi"
+            ? "Đã gửi! Kiểm tra email của bạn và nhấn vào liên kết đăng nhập."
+            : "Sent! Check your email and tap the sign-in link."}
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => void sendMagicLink()}
+          disabled={magicLoading}
+          style={{
+            width: "100%",
+            minHeight: 48,
+            padding: 12,
+            borderRadius: 12,
+            border: "1px solid #2d5a3d",
+            background: "transparent",
+            color: "#2d5a3d",
+            fontWeight: 600,
+            fontSize: 15,
+            cursor: "pointer",
+          }}
+        >
+          {magicLoading
+            ? lang === "vi" ? "Đang gửi…" : "Sending…"
+            : lang === "vi"
+              ? "Gửi liên kết đăng nhập qua email (không cần mật khẩu)"
+              : "Email me a sign-in link (no password needed)"}
+        </button>
+      )}
     </main>
   );
 }

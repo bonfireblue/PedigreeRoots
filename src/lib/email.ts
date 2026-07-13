@@ -43,7 +43,10 @@ export async function sendInvitationEmail(params: {
         </div>
         <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 12px 12px; border: 1px solid #e5e7eb; border-top: none;">
           <p style="font-size: 16px; margin-bottom: 20px;">
-            <strong>${inviterName}</strong> đã mời bạn nhận hồ sơ của mình với tên <strong>${personName}</strong> trong cây gia đình của họ.
+            <strong>${inviterName}</strong> đã thêm bạn vào cây gia đình với tên <strong>${personName}</strong>.
+          </p>
+          <p style="font-size: 15px; color: #4b5563; margin-bottom: 20px;">
+            Gia đình mong bạn giúp bổ sung phần của mình — cha mẹ, vợ/chồng và con cái của bạn. Chỉ bạn mới biết những câu chuyện đó.
           </p>
           <div style="text-align: center; margin: 30px 0;">
             <a href="${inviteUrl}" style="background: #667eea; color: white; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; display: inline-block;">
@@ -69,7 +72,10 @@ export async function sendInvitationEmail(params: {
         </div>
         <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 12px 12px; border: 1px solid #e5e7eb; border-top: none;">
           <p style="font-size: 16px; margin-bottom: 20px;">
-            <strong>${inviterName}</strong> has invited you to claim your profile as <strong>${personName}</strong> in their family tree.
+            <strong>${inviterName}</strong> added you to the family tree as <strong>${personName}</strong>.
+          </p>
+          <p style="font-size: 15px; color: #4b5563; margin-bottom: 20px;">
+            The family is hoping you can fill in your side — your parents, spouse, and children. Only you know those stories.
           </p>
           <div style="text-align: center; margin: 30px 0;">
             <a href="${inviteUrl}" style="background: #667eea; color: white; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; display: inline-block;">
@@ -94,6 +100,70 @@ export async function sendInvitationEmail(params: {
 
   if (error) {
     console.error('Failed to send invitation email:', error);
+    throw new Error(`Failed to send email: ${error.message}`);
+  }
+
+  return data;
+}
+
+export async function sendMagicLinkEmail(params: {
+  to: string;
+  magicUrl: string;
+}) {
+  const { to, magicUrl } = params;
+  const isVietnamese = isVietnameseEmail(to);
+
+  const subject = isVietnamese
+    ? 'Liên kết đăng nhập của bạn'
+    : 'Your sign-in link';
+
+  const heading = isVietnamese ? 'Đăng nhập' : 'Sign in';
+  const intro = isVietnamese
+    ? 'Nhấn vào nút bên dưới để đăng nhập vào Pedigree Roots. Không cần mật khẩu.'
+    : 'Tap the button below to sign in to Pedigree Roots. No password needed.';
+  const button = isVietnamese ? 'Đăng nhập' : 'Sign in';
+  const expiry = isVietnamese
+    ? 'Liên kết này chỉ dùng được một lần và hết hạn sau 15 phút.'
+    : 'This link works once and expires in 15 minutes.';
+  const ignore = isVietnamese
+    ? 'Nếu bạn không yêu cầu đăng nhập, bạn có thể bỏ qua email này.'
+    : "If you didn't ask to sign in, you can safely ignore this email.";
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #2d5a3d; padding: 30px; border-radius: 12px 12px 0 0; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 24px;">${heading}</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 12px 12px; border: 1px solid #e5e7eb; border-top: none;">
+          <p style="font-size: 16px; margin-bottom: 25px;">${intro}</p>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${magicUrl}" style="background: #2d5a3d; color: white; padding: 16px 36px; border-radius: 8px; text-decoration: none; font-weight: 600; display: inline-block; font-size: 17px;">
+              ${button}
+            </a>
+          </div>
+          <p style="font-size: 14px; color: #6b7280; text-align: center;">${expiry}</p>
+          <p style="font-size: 12px; color: #9ca3af; margin-top: 30px; text-align: center;">${ignore}</p>
+        </div>
+      </body>
+    </html>
+  `;
+
+  const { data, error } = await resend.emails.send({
+    from: SUPPORT_FROM_EMAIL,
+    replyTo: REPLY_TO_EMAIL,
+    to: [to],
+    subject,
+    html,
+  });
+
+  if (error) {
+    console.error('Failed to send magic link email:', error);
     throw new Error(`Failed to send email: ${error.message}`);
   }
 

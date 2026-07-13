@@ -1,187 +1,252 @@
 "use client";
-// AcceptInviteClient - Updated March 27 2026 with confirm password field
+// AcceptInviteClient — Phase 2 rework: value-first, passwordless, elder-proof.
+// Flow: (1) see your spot in the tree, (2) "Yes, that's me", (3) confirm your
+// name. No password anywhere; phone-only invites ask for an email (one
+// question, one screen).
 
-import { useMemo, useState } from "react";
-import { useSession } from "next-auth/react";
+import { useEffect, useMemo, useState } from "react";
+import { signIn, useSession } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
 import { useLanguage, LanguageToggle } from "@/contexts/LanguageContext";
 
-type Stage = "start" | "register" | "done" | "error";
+type Stage = "loading" | "tree" | "email" | "confirm" | "declined" | "error";
+
+type Preview = {
+  valid: boolean;
+  alreadyClaimed: boolean;
+  expired: boolean;
+  hasEmail: boolean;
+  inviterName: string;
+  familyName: string;
+  targetPerson: { id: string; fullName: string; photoUrl: string | null };
+  parents: string[];
+  children: string[];
+  spouses: string[];
+};
+
+// ——— Elder-proof building blocks: big text, ≥56px tap targets, one idea per
+// screen, tap-only interactions ———
+
+const bigButtonStyle: React.CSSProperties = {
+  width: "100%",
+  minHeight: 60,
+  padding: "16px 20px",
+  borderRadius: 14,
+  border: "none",
+  background: "#2d5a3d",
+  color: "#ffffff",
+  fontWeight: 700,
+  fontSize: 20,
+  cursor: "pointer",
+};
+
+const secondaryButtonStyle: React.CSSProperties = {
+  ...bigButtonStyle,
+  background: "transparent",
+  border: "2px solid #9ca3af",
+  color: "inherit",
+  fontWeight: 600,
+};
+
+const bigInputStyle: React.CSSProperties = {
+  width: "100%",
+  minHeight: 56,
+  padding: "14px 16px",
+  border: "2px solid #9ca3af",
+  borderRadius: 14,
+  fontSize: 20,
+  background: "transparent",
+  color: "inherit",
+};
+
+function PersonChip({ name, dim }: { name: string; dim?: boolean }) {
+  return (
+    <div
+      style={{
+        padding: "10px 14px",
+        borderRadius: 12,
+        border: "1px solid #d1d5db",
+        background: dim ? "rgba(148,163,184,0.12)" : "rgba(148,163,184,0.18)",
+        fontSize: 16,
+        fontWeight: 600,
+        textAlign: "center",
+      }}
+    >
+      {name}
+    </div>
+  );
+}
 
 export default function AcceptInviteClient() {
   const { status: authStatus } = useSession();
   const searchParams = useSearchParams();
   const token = useMemo(() => searchParams.get("token") ?? "", [searchParams]);
-  const { t, lang } = useLanguage();
+  const { lang } = useLanguage();
+  const vi = lang === "vi";
 
-  const [stage, setStage] = useState<Stage>("start");
-  const [msg, setMsg] = useState<string>("");
+  const [stage, setStage] = useState<Stage>("loading");
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(false);
-
-  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
+  const [confirmName, setConfirmName] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  // Format phone number as user types
-  function formatPhoneNumber(value: string): string {
-    const digits = value.replace(/\D/g, "").slice(0, 12);
-    if (digits.length === 0) return "";
-    if (digits.length <= 3) return `(${digits}`;
-    if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
-    if (digits.length <= 10) return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
-    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6, 10)}-${digits.slice(10)}`;
-  }
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!token) {
+        setStage("error");
+        setMsg(vi ? "Thiếu mã lời mời." : "This invitation link is missing its code.");
+        return;
+      }
+      try {
+        const res = await fetch(`/api/invitations/preview?token=${encodeURIComponent(token)}`);
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
 
-  async function accept() {
-    setMsg("");
+        if (!res.ok) {
+          setStage("error");
+          setMsg(vi ? "Lời mời không hợp lệ." : "We couldn't find this invitation.");
+          return;
+        }
+
+        setPreview(data);
+        setConfirmName(data.targetPerson?.fullName ?? "");
+
+        if (data.alreadyClaimed) {
+          setStage("error");
+          setMsg(
+            vi
+              ? "Hồ sơ này đã có người nhận. Nếu đó là bạn, hãy đăng nhập."
+              : "This profile has already been claimed. If that was you, just sign in."
+          );
+          return;
+        }
+        if (data.expired) {
+          setStage("error");
+          setMsg(
+            vi
+              ? "Lời mời này đã hết hạn. Hãy nhờ người thân gửi lại lời mời mới."
+              : "This invitation has expired. Ask your family member to send a new one."
+          );
+          return;
+        }
+
+        setStage("tree");
+      } catch {
+        if (!cancelled) {
+          setStage("error");
+          setMsg(vi ? "Không tải được lời mời." : "We couldn't load this invitation.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  async function acceptPasswordless(withEmail?: string) {
     setLoading(true);
-
-    if (!token) {
-      setStage("error");
-      setMsg(lang === "vi" ? "Thiếu mã token." : "Missing token.");
-      setLoading(false);
-      return;
-    }
-
-    // If logged in, use existing accept endpoint
-    if (authStatus === "authenticated") {
-      const res = await fetch("/api/invitations/accept", {
+    setError(null);
+    try {
+      const res = await fetch("/api/invitations/accept-passwordless", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
+        body: JSON.stringify({ token, email: withEmail || undefined }),
       });
-
       const data = await res.json().catch(() => ({}));
+
       if (!res.ok) {
-        setStage("error");
-        setMsg(data?.error ?? (lang === "vi" ? `Thất bại với mã ${res.status}` : `Failed with ${res.status}`));
-        setLoading(false);
+        if (data?.error === "EMAIL_REQUIRED") {
+          setStage("email");
+          return;
+        }
+        if (data?.error === "EMAIL_IN_USE") {
+          setError(
+            vi
+              ? "Email này đã có tài khoản. Hãy đăng nhập trước rồi mở lại liên kết."
+              : "That email already has an account. Please sign in first, then open this link again."
+          );
+          return;
+        }
+        setError(String(data?.error ?? (vi ? "Không thành công." : "Something went wrong.")));
         return;
       }
 
-      setStage("done");
-      setMsg(lang === "vi" ? "Đã chấp nhận lời mời. Đang chuyển hướng..." : "Invitation accepted. Redirecting...");
-      setTimeout(() => (window.location.href = "/pedigree"), 700);
-      return;
-    }
+      const signed = await signIn("login-token", { token: data.loginToken, redirect: false });
+      if (!signed?.ok) {
+        setError(vi ? "Không đăng nhập được. Hãy thử lại." : "We couldn't sign you in. Please try again.");
+        return;
+      }
 
-    // Not logged in: proceed to account creation
-    setStage("register");
-    setLoading(false);
+      setStage("confirm");
+    } finally {
+      setLoading(false);
+    }
   }
 
-  async function createAccount(e: React.FormEvent) {
-    e.preventDefault();
-    setMsg("");
+  async function yesThatsMe() {
     setError(null);
 
-    const phoneDigits = phone.replace(/\D/g, "");
-    const hasEmail = email.trim().length > 0;
-    const hasPhone = phoneDigits.length >= 10;
-
-    // Must have at least email or phone
-    if (!hasEmail && !hasPhone) {
-      setError(lang === "vi" ? "Vui lòng nhập email hoặc số điện thoại." : "Please enter an email or phone number.");
+    // Already signed in: use the classic accept endpoint with the session
+    if (authStatus === "authenticated") {
+      setLoading(true);
+      try {
+        const res = await fetch("/api/invitations/accept", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setError(String(data?.error ?? (vi ? "Không thành công." : "Something went wrong.")));
+          return;
+        }
+        setStage("confirm");
+      } finally {
+        setLoading(false);
+      }
       return;
     }
 
-    // Validate password match
-    if (password !== confirmPassword) {
-      setError(lang === "vi" ? "Mật khẩu không khớp." : "Passwords do not match.");
-      return;
-    }
-
-    if (password.length < 8) {
-      setError(lang === "vi" ? "Mật khẩu phải có ít nhất 8 ký tự." : "Password must be at least 8 characters.");
-      return;
-    }
-
-    setLoading(true);
-
-    const res = await fetch("/api/invitations/accept-and-register", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        token, 
-        email: hasEmail ? email.trim() : undefined, 
-        phone: hasPhone ? `+${phoneDigits}` : undefined,
-        password, 
-        name: name || undefined 
-      }),
-    });
-
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      setError(data?.error ?? (lang === "vi" ? `Thất bại với mã ${res.status}` : `Failed with ${res.status}`));
-      setLoading(false);
-      return;
-    }
-
-    setStage("done");
-    setMsg(lang === "vi" ? "Đã tạo tài khoản. Đăng nhập để tiếp tục." : "Account created. Now sign in to continue.");
-
-    // Send them to sign-in
-    setTimeout(() => {
-      window.location.href = "/sign-in";
-    }, 700);
+    // Not signed in: passwordless. Email invites need zero extra questions.
+    await acceptPasswordless();
   }
 
-  // Input style matching sign-up page
-  const inputStyle = {
-    padding: 12,
-    border: "1px solid #444",
-    borderRadius: 10,
-    width: "100%",
-    fontSize: 15,
-    background: "transparent",
-    color: "inherit",
-  };
-
-  const labelStyle = {
-    display: "grid" as const,
-    gap: 8,
-  };
-
-  const labelTextStyle = {
-    fontSize: 15,
-    fontWeight: 500 as const,
-  };
-
-  const buttonStyle = {
-    padding: 14,
-    borderRadius: 10,
-    border: "none",
-    background: "white",
-    color: "#111",
-    fontWeight: 600 as const,
-    cursor: "pointer" as const,
-    width: "100%",
-    fontSize: 15,
-    marginTop: 8,
-  };
-
-  const secondaryButtonStyle = {
-    ...buttonStyle,
-    background: "transparent",
-    border: "1px solid #444",
-    color: "inherit",
-  };
+  async function saveNameAndFinish(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      const trimmed = confirmName.trim();
+      if (preview && trimmed && trimmed !== preview.targetPerson.fullName) {
+        await fetch("/api/save-profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ personId: preview.targetPerson.id, fullName: trimmed }),
+        }).catch(() => null);
+      }
+      window.location.href = "/pedigree";
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
-    <main style={{ 
-      maxWidth: 480, 
-      margin: "0 auto", 
-      padding: "40px 24px",
-      minHeight: "100vh",
-      display: "flex",
-      flexDirection: "column",
-      justifyContent: "center",
-    }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+    <main
+      style={{
+        maxWidth: 480,
+        margin: "0 auto",
+        padding: "32px 20px",
+        minHeight: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "center",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.5 }}>
           <span style={{ color: "#2d5a3d" }}>Pedigree</span>
           <span style={{ color: "#4a7c59" }}>Roots</span>
@@ -189,250 +254,212 @@ export default function AcceptInviteClient() {
         <LanguageToggle />
       </div>
 
-      {stage === "start" && (
+      {stage === "loading" && (
+        <p style={{ fontSize: 20, opacity: 0.7 }}>{vi ? "Đang tải lời mời…" : "Loading your invitation…"}</p>
+      )}
+
+      {stage === "tree" && preview && (
         <>
-          <h1 style={{ fontSize: 32, fontWeight: 700, marginBottom: 12 }}>
-            {lang === "vi" ? "Lời Mời Gia Đình" : "Family Invitation"}
+          <h1 style={{ fontSize: 26, fontWeight: 700, lineHeight: 1.35, marginBottom: 20 }}>
+            {vi ? (
+              <>
+                <span style={{ color: "#2d5a3d" }}>{preview.inviterName}</span> đã thêm bạn vào cây gia đình{" "}
+                <span style={{ color: "#2d5a3d" }}>{preview.familyName}</span>
+              </>
+            ) : (
+              <>
+                <span style={{ color: "#2d5a3d" }}>{preview.inviterName}</span> added you to the{" "}
+                <span style={{ color: "#2d5a3d" }}>{preview.familyName}</span> tree
+              </>
+            )}
           </h1>
 
-          <p style={{ opacity: 0.7, marginBottom: 32, fontSize: 16, lineHeight: 1.5 }}>
-            {t.youAreInvited}
-          </p>
+          {/* Your spot in the tree: parents above, you (highlighted) with
+              spouse beside, children below. Pure tap-free display. */}
+          <div
+            style={{
+              border: "1px solid #d1d5db",
+              borderRadius: 18,
+              padding: 18,
+              marginBottom: 24,
+              display: "grid",
+              gap: 14,
+            }}
+          >
+            {preview.parents.length > 0 && (
+              <div>
+                <div style={{ fontSize: 14, opacity: 0.6, marginBottom: 6 }}>
+                  {vi ? "Cha mẹ" : "Parents"}
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+                  {preview.parents.map((n) => (
+                    <PersonChip key={n} name={n} dim />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "center", flexWrap: "wrap" }}>
+              <div
+                style={{
+                  padding: "16px 22px",
+                  borderRadius: 16,
+                  border: "3px solid #2d5a3d",
+                  background: "rgba(45, 90, 61, 0.08)",
+                  textAlign: "center",
+                }}
+              >
+                <div style={{ fontSize: 14, color: "#4a7c59", fontWeight: 700, marginBottom: 2 }}>
+                  {vi ? "Đây là bạn" : "This is you"}
+                </div>
+                <div style={{ fontSize: 22, fontWeight: 800 }}>{preview.targetPerson.fullName}</div>
+              </div>
+              {preview.spouses.map((n) => (
+                <PersonChip key={n} name={n} />
+              ))}
+            </div>
+
+            {preview.children.length > 0 && (
+              <div>
+                <div style={{ fontSize: 14, opacity: 0.6, marginBottom: 6 }}>
+                  {vi ? "Con" : "Children"}
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+                  {preview.children.map((n) => (
+                    <PersonChip key={n} name={n} dim />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {error && <div style={{ color: "#ef4444", fontSize: 17, marginBottom: 14 }}>{error}</div>}
 
           <div style={{ display: "grid", gap: 12 }}>
-            <button 
-              onClick={accept} 
-              disabled={loading}
-              style={{
-                ...buttonStyle,
-                opacity: loading ? 0.7 : 1,
-                cursor: loading ? "not-allowed" : "pointer",
-              }}
-            >
-              {loading 
-                ? (lang === "vi" ? "Đang xử lý..." : "Processing...") 
-                : t.acceptInvite
-              }
+            <button onClick={() => void yesThatsMe()} disabled={loading} style={{ ...bigButtonStyle, opacity: loading ? 0.7 : 1 }}>
+              {loading
+                ? vi ? "Đang xử lý…" : "One moment…"
+                : vi ? "Đúng, là tôi" : "Yes, that's me"}
             </button>
-            <button 
-              onClick={() => {
-                setStage("done");
-                setMsg(lang === "vi" ? "Đã từ chối lời mời." : "Invitation declined.");
-              }}
+            <button
+              onClick={() => setStage("declined")}
+              disabled={loading}
               style={secondaryButtonStyle}
             >
-              {lang === "vi" ? "Từ chối" : "Decline"}
+              {vi ? "Không phải tôi" : "This isn't me"}
             </button>
           </div>
 
           {authStatus === "unauthenticated" && (
-            <p style={{ marginTop: 32, textAlign: "center", fontSize: 15 }}>
-              {t.alreadyHaveAccount}{" "}
+            <p style={{ marginTop: 24, textAlign: "center", fontSize: 16 }}>
+              {vi ? "Đã có tài khoản?" : "Already have an account?"}{" "}
               <a
                 href={`/sign-in?callbackUrl=${encodeURIComponent(`/accept-invite?token=${token}`)}`}
-                style={{ fontWeight: 600, textDecoration: "underline" }}
+                style={{ fontWeight: 700, textDecoration: "underline" }}
               >
-                {t.signIn}
+                {vi ? "Đăng nhập" : "Sign in"}
               </a>
             </p>
           )}
         </>
       )}
 
-      {stage === "register" && (
+      {stage === "email" && (
         <>
-          <h1 style={{ fontSize: 32, fontWeight: 700, marginBottom: 12 }}>
-            {t.createAccount}
+          <h1 style={{ fontSize: 26, fontWeight: 700, marginBottom: 12 }}>
+            {vi ? "Email của bạn là gì?" : "What's your email?"}
           </h1>
-
-          <p style={{ opacity: 0.7, marginBottom: 32, fontSize: 16, lineHeight: 1.5 }}>
-            {lang === "vi" 
-              ? "Tạo tài khoản để nhận hồ sơ của bạn trong cây gia đình."
-              : "Create an account to claim your profile in the family tree."}
+          <p style={{ opacity: 0.7, fontSize: 18, lineHeight: 1.5, marginBottom: 24 }}>
+            {vi
+              ? "Chúng tôi dùng email để bạn đăng nhập lại sau này. Không cần mật khẩu."
+              : "We use it so you can sign back in later. No password needed."}
           </p>
 
-          <form onSubmit={createAccount} style={{ display: "grid", gap: 20 }}>
-            <label style={labelStyle}>
-              <span style={labelTextStyle}>{lang === "vi" ? "Họ và tên" : "Full Name"}</span>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={lang === "vi" ? "Nhập họ và tên của bạn" : "Enter your full name"}
-                autoComplete="name"
-                style={inputStyle}
-              />
-            </label>
-
-            <label style={labelStyle}>
-              <span style={labelTextStyle}>
-                {t.email}
-              </span>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                autoComplete="email"
-                style={inputStyle}
-              />
-            </label>
-
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ flex: 1, height: 1, background: "#444" }} />
-              <span style={{ fontSize: 13, opacity: 0.6 }}>
-                {lang === "vi" ? "hoặc" : "or"}
-              </span>
-              <div style={{ flex: 1, height: 1, background: "#444" }} />
-            </div>
-
-            <label style={labelStyle}>
-              <span style={labelTextStyle}>
-                {t.phone} <span style={{ fontWeight: 400, opacity: 0.6 }}>(with country code)</span>
-              </span>
-              <input
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(formatPhoneNumber(e.target.value))}
-                placeholder="(1) 555-123-4567"
-                autoComplete="tel"
-                style={inputStyle}
-              />
-            </label>
-
-            <p style={{ fontSize: 13, opacity: 0.6, marginTop: -8 }}>
-              {lang === "vi" 
-                ? "Nhập email hoặc số điện thoại (ít nhất 1 trong 2)"
-                : "Enter email or phone number (at least one required)"}
-            </p>
-
-            <label style={labelStyle}>
-              <span style={labelTextStyle}>
-                {t.password} <span style={{ color: "#ef4444" }}>*</span>
-              </span>
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder={lang === "vi" ? "8 ký tự trở lên" : "8+ characters"}
-                autoComplete="new-password"
-                style={inputStyle}
-              />
-            </label>
-
-            <label style={labelStyle}>
-              <span style={labelTextStyle}>
-                {t.confirmPassword} <span style={{ color: "#ef4444" }}>*</span>
-              </span>
-              <input
-                type="password"
-                required
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                placeholder={lang === "vi" ? "Nhập lại mật khẩu" : "Re-enter password"}
-                autoComplete="new-password"
-                style={inputStyle}
-              />
-            </label>
-
-            {error && (
-              <div style={{ color: "#ef4444", fontSize: 14 }}>
-                {error}
-              </div>
-            )}
-
-            <button 
-              type="submit"
-              disabled={loading}
-              style={{
-                ...buttonStyle,
-                opacity: loading ? 0.7 : 1,
-                cursor: loading ? "not-allowed" : "pointer",
-              }}
-            >
-              {loading 
-                ? (lang === "vi" ? "Đang tạo..." : "Creating...") 
-                : t.createAccount
-              }
-            </button>
-
-            <button 
-              type="button"
-              onClick={() => setStage("start")} 
-              style={secondaryButtonStyle}
-            >
-              {t.back}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (email.trim()) void acceptPasswordless(email.trim());
+            }}
+            style={{ display: "grid", gap: 14 }}
+          >
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              autoComplete="email"
+              style={bigInputStyle}
+            />
+            {error && <div style={{ color: "#ef4444", fontSize: 17 }}>{error}</div>}
+            <button type="submit" disabled={loading} style={{ ...bigButtonStyle, opacity: loading ? 0.7 : 1 }}>
+              {loading ? (vi ? "Đang xử lý…" : "One moment…") : vi ? "Tiếp tục" : "Continue"}
             </button>
           </form>
-
-          <p style={{ marginTop: 32, textAlign: "center", fontSize: 15 }}>
-            {t.alreadyHaveAccount}{" "}
-            <a href="/sign-in" style={{ fontWeight: 600, textDecoration: "underline" }}>
-              {t.signIn}
-            </a>
-          </p>
         </>
       )}
 
-      {stage === "done" && (
-        <div style={{ textAlign: "center" }}>
-          <div style={{ 
-            width: 72, 
-            height: 72, 
-            borderRadius: "50%", 
-            background: "#22c55e20", 
-            display: "flex", 
-            alignItems: "center", 
-            justifyContent: "center",
-            margin: "0 auto 20px",
-          }}>
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5">
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
-          </div>
-          <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 12 }}>
-            {lang === "vi" ? "Hoàn tất!" : "Done!"}
+      {stage === "confirm" && preview && (
+        <>
+          <h1 style={{ fontSize: 26, fontWeight: 700, marginBottom: 12 }}>
+            {vi ? "Tên bạn có đúng không?" : "Is your name right?"}
           </h1>
-          <p style={{ opacity: 0.7, fontSize: 16 }}>
-            {msg || (lang === "vi" ? "Hoàn tất." : "Done.")}
+          <p style={{ opacity: 0.7, fontSize: 18, lineHeight: 1.5, marginBottom: 24 }}>
+            {vi ? "Bạn có thể sửa lại nếu cần." : "You can fix it if it's not quite right."}
+          </p>
+
+          <form onSubmit={(e) => void saveNameAndFinish(e)} style={{ display: "grid", gap: 14 }}>
+            <input
+              type="text"
+              value={confirmName}
+              onChange={(e) => setConfirmName(e.target.value)}
+              autoComplete="name"
+              style={bigInputStyle}
+            />
+            {error && <div style={{ color: "#ef4444", fontSize: 17 }}>{error}</div>}
+            <button type="submit" disabled={loading} style={{ ...bigButtonStyle, opacity: loading ? 0.7 : 1 }}>
+              {loading
+                ? vi ? "Đang lưu…" : "Saving…"
+                : vi ? "Xem cây gia đình →" : "See the family tree →"}
+            </button>
+          </form>
+        </>
+      )}
+
+      {stage === "declined" && (
+        <div style={{ textAlign: "center" }}>
+          <h1 style={{ fontSize: 26, fontWeight: 700, marginBottom: 12 }}>
+            {vi ? "Không sao cả" : "No problem"}
+          </h1>
+          <p style={{ opacity: 0.7, fontSize: 18, lineHeight: 1.5 }}>
+            {vi
+              ? "Chúng tôi sẽ không làm gì thêm. Bạn có thể đóng trang này."
+              : "Nothing else will happen. You can close this page."}
           </p>
         </div>
       )}
 
       {stage === "error" && (
         <div style={{ textAlign: "center" }}>
-          <div style={{ 
-            width: 72, 
-            height: 72, 
-            borderRadius: "50%", 
-            background: "#ef444420", 
-            display: "flex", 
-            alignItems: "center", 
-            justifyContent: "center",
-            margin: "0 auto 20px",
-          }}>
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="15" y1="9" x2="9" y2="15" />
-              <line x1="9" y1="9" x2="15" y2="15" />
-            </svg>
-          </div>
-          <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 12, color: "#ef4444" }}>
-            {t.error}
+          <h1 style={{ fontSize: 26, fontWeight: 700, marginBottom: 12 }}>
+            {vi ? "Rất tiếc" : "Sorry about that"}
           </h1>
-          <p style={{ marginBottom: 20, fontSize: 16 }}>{msg}</p>
-          <p style={{ opacity: 0.6, fontSize: 14, marginBottom: 24 }}>
-            {lang === "vi" 
-              ? "Nếu bạn đã tạo tài khoản, hãy đăng nhập rồi thử lại."
-              : "If you already created an account, sign in and try again."}
-          </p>
-          <button 
-            onClick={() => setStage("start")} 
-            style={buttonStyle}
+          <p style={{ fontSize: 18, lineHeight: 1.6, marginBottom: 24 }}>{msg}</p>
+          <a
+            href="/sign-in"
+            style={{
+              display: "inline-block",
+              padding: "16px 24px",
+              borderRadius: 14,
+              background: "#2d5a3d",
+              color: "#ffffff",
+              fontWeight: 700,
+              fontSize: 18,
+              textDecoration: "none",
+            }}
           >
-            {lang === "vi" ? "Thử lại" : "Try Again"}
-          </button>
+            {vi ? "Đăng nhập" : "Sign in"}
+          </a>
         </div>
       )}
     </main>

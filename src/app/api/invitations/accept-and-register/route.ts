@@ -3,14 +3,13 @@ import argon2 from "argon2";
 import { prisma } from "@/lib/db";
 import { sql } from "@/lib/neon-db";
 import { readJson } from "@/lib/body";
-import { logChanges } from "@/lib/changeLog";
+import { claimInvitationTx } from "@/lib/inviteClaim";
 import {
   InvitationError,
   assertNonEmptyToken,
   assertValidEmail,
   assertValidPhone,
   getPendingInvitationOrThrow,
-  normalizeEmail,
   normalizePhone,
 } from "@/lib/invitationRules";
 
@@ -88,144 +87,7 @@ export async function POST(req: Request) {
 
     // Now use Prisma for the rest of the transaction
     const result = await prisma.$transaction(async (tx) => {
-      const freshInvite = await tx.invitation.findUnique({
-        where: { token },
-        include: {
-          targetPerson: {
-            select: {
-              id: true,
-              claimedByUserId: true,
-            },
-          },
-        },
-      });
-
-      if (!freshInvite) {
-        throw new InvitationError("INVALID_TOKEN", 404);
-      }
-
-      if (freshInvite.status !== "PENDING") {
-        throw new InvitationError("INVITE_NOT_PENDING", 400);
-      }
-
-      if (freshInvite.expiresAt && freshInvite.expiresAt.getTime() < Date.now()) {
-        await tx.invitation.update({
-          where: { id: freshInvite.id },
-          data: { status: "EXPIRED" },
-        });
-        throw new InvitationError("INVITE_EXPIRED", 400);
-      }
-
-      await tx.membership.upsert({
-        where: {
-          userId_familyGraphId: {
-            userId: userId,
-            familyGraphId: freshInvite.familyGraphId,
-          },
-        },
-        update: {},
-        create: {
-          userId: userId,
-          familyGraphId: freshInvite.familyGraphId,
-          role: "MEMBER",
-          invitedByUserId: freshInvite.inviterUserId,
-        },
-      });
-
-      const claimResult = await tx.person.updateMany({
-        where: {
-          id: freshInvite.targetPersonId,
-          claimedByUserId: null,
-        },
-        data: {
-          claimedByUserId: userId,
-        },
-      });
-
-      if (claimResult.count !== 1) {
-        await tx.invitation.updateMany({
-          where: {
-            id: freshInvite.id,
-            status: "PENDING",
-          },
-          data: {
-            status: "REVOKED",
-          },
-        });
-
-        throw new InvitationError("PERSON_ALREADY_CLAIMED", 400);
-      }
-
-      // Update name if provided
-      if (name) {
-        // Parse name into first and last
-        const nameParts = name.trim().split(/\s+/);
-        const lastName = nameParts.length > 1 ? nameParts.pop() : null;
-        const firstName = nameParts.length > 0 ? nameParts.join(" ") : null;
-        
-        await tx.person.update({
-          where: { id: freshInvite.targetPersonId },
-          data: { 
-            fullName: name,
-            firstName,
-            lastName,
-          },
-        });
-      }
-
-      const acceptResult = await tx.invitation.updateMany({
-        where: {
-          id: freshInvite.id,
-          status: "PENDING",
-        },
-        data: {
-          status: "ACCEPTED",
-          acceptedByUserId: userId,
-          acceptedAt: new Date(),
-        },
-      });
-
-      if (acceptResult.count !== 1) {
-        throw new InvitationError("INVITE_NOT_PENDING", 400);
-      }
-
-      await tx.invitation.updateMany({
-        where: {
-          targetPersonId: freshInvite.targetPersonId,
-          status: "PENDING",
-          NOT: { id: freshInvite.id },
-        },
-        data: {
-          status: "REVOKED",
-        },
-      });
-
-      await logChanges(tx, [
-        {
-          familyGraphId: freshInvite.familyGraphId,
-          actorUserId: userId,
-          targetPersonId: freshInvite.targetPersonId,
-          targetType: "INVITATION",
-          targetId: freshInvite.id,
-          action: "UPDATE",
-          field: "status",
-          oldValue: "PENDING",
-          newValue: "ACCEPTED",
-        },
-        {
-          familyGraphId: freshInvite.familyGraphId,
-          actorUserId: userId,
-          targetPersonId: freshInvite.targetPersonId,
-          targetType: "PERSON",
-          targetId: freshInvite.targetPersonId,
-          action: "UPDATE",
-          field: "claimedByUserId",
-          oldValue: null,
-          newValue: userId,
-        },
-      ]);
-
-      return { claimedPersonId: freshInvite.targetPersonId };
+      return claimInvitationTx(tx, { token, userId, name });
     });
 
     return NextResponse.json({
