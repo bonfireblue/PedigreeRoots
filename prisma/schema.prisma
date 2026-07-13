@@ -11,9 +11,10 @@ model User {
   id                  String               @id @default(uuid())
   email               String               @unique
   createdAt           DateTime             @default(now())
-  passwordHash        String
+  passwordHash        String? // null = passwordless account (invite/magic-link sign-in)
   role                UserRole             @default(USER)
   phone               String?              @unique
+  loginTokens         LoginToken[]
   createdFamilyGraphs FamilyGraph[]        @relation("FamilyGraphCreatedBy")
   acceptedInvites     Invitation[]         @relation("AcceptedByInvitations")
   sentInvitations     Invitation[]         @relation("InviterInvitations")
@@ -24,6 +25,21 @@ model User {
   people              Person[]             @relation("CreatedPeople")
   vouchesGiven        Vouch[]              @relation("VouchesGiven")
   vouchesReceived     Vouch[]              @relation("VouchesReceived")
+}
+
+// One-time login tokens: invite-acceptance session exchange and email magic
+// links. Only the SHA-256 hash of a token is stored.
+model LoginToken {
+  id        String    @id @default(uuid())
+  tokenHash String    @unique
+  userId    String
+  purpose   String    @default("LOGIN")
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model PasswordResetToken {

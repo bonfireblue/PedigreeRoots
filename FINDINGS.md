@@ -77,3 +77,16 @@ Side note on relationship POSTs: the "auto-link children to spouses" side effect
   - **Invitation contact details are kept out of ChangeLog** (`newValue` is just "email invite"/"phone invite") — the feed is visible to the whole graph.
   - The **read-side cross-graph leak** on `person-detail`/`profile`/`member-info` GETs (Phase 0 finding) is NOT fixed in this phase — it's a read-path change, queued as a decision/follow-up rather than smuggled into the permissions diff.
   - The stale "raw SQL to bypass Prisma's cached schema" workaround in invitations POST was removed (schema now matches prod), making the invite INSERT + log transactional.
+
+---
+
+## Phase 2 — implementation notes (2026-07-13, `phase-2-elder-entry` branch)
+
+- **Passwordless architecture**: one-time `LoginToken` rows (SHA-256 hash at rest, 15-min TTL, race-safe single use) power both invite acceptance and returning magic-link login, exchanged for a NextAuth session via a new `login-token` credentials provider. `passwordHash` is now nullable; the password `authorize` already rejected empty hashes, so password login is unaffected.
+- **Claim logic deduplicated**: `accept`, `accept-and-register`, and the new `accept-passwordless` all run the same `claimInvitationTx` (lib/inviteClaim.ts). This also fixed a pre-existing inconsistency: register-based acceptance previously skipped the "auto-verify first 10 invitees" rule that logged-in acceptance applied.
+- **Account-binding rule** (`resolvePasswordlessEmail`, unit-tested): email invites always bind to the invite's email (the link proves inbox control, so an existing account with that email gets signed in — same trust level as a magic link). Phone-only invites must supply an email, which may NOT belong to an existing account (prevents invite-bearer account hijack); those users get one extra question screen.
+- **Invite preview endpoint** exposes only the target node + immediate-family *names* to the token bearer — nothing else in the graph.
+- **Elder-proof pass** was scoped to accept-invite → claim → name-confirm plus the magic-link error page: ≥56px tap targets, 18–22px text, one question per screen, no pinch/drag anywhere in the flow.
+- **⚠️ SMS OTP not built** (needs Bon's provider decision — Invitation.phone exists but no sender is wired). Phone-invite links still work when shared manually; only the *sending* is missing.
+- Pre-existing issue left alone: `accept-and-register` can still try to create a user with null email (phone-only + password path) which would violate prod's NOT NULL email constraint — that route predates this work and the new passwordless flow supersedes it in the UI. Flagged rather than changed.
+- `/settings` page added with the optional set-a-password form (never prompted during onboarding).

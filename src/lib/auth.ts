@@ -1,8 +1,9 @@
 import type { AuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
-import { findUserByEmail, findUserByPhone } from "@/lib/neon-db";
+import { findUserByEmail, findUserById, findUserByPhone } from "@/lib/neon-db";
 import { prisma } from "@/lib/db";
+import { consumeLoginToken } from "@/lib/loginTokens";
 import argon2 from "argon2";
 
 // Check if input looks like a phone number (digits only, 10-15 chars)
@@ -48,6 +49,28 @@ export const authOptions: AuthOptions = {
 
         const ok = await argon2.verify(user.passwordHash, password);
         if (!ok) return null;
+
+        return { id: user.id, email: user.email ?? user.phone };
+      }
+    }),
+    // Passwordless session exchange (Phase 2a): a one-time LoginToken —
+    // minted by invite acceptance or an emailed magic link — becomes a
+    // session. Tokens are single-use and expire in 15 minutes.
+    CredentialsProvider({
+      id: "login-token",
+      name: "LoginToken",
+      credentials: {
+        token: { label: "Token", type: "text" },
+      },
+      async authorize(credentials) {
+        const raw = credentials?.token?.trim();
+        if (!raw) return null;
+
+        const userId = await consumeLoginToken(raw);
+        if (!userId) return null;
+
+        const user = await findUserById(userId);
+        if (!user) return null;
 
         return { id: user.id, email: user.email ?? user.phone };
       }
