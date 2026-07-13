@@ -24,6 +24,38 @@ export function normalizeSpousePair(aId: string, bId: string): [string, string] 
   return aId < bId ? [aId, bId] : [bId, aId];
 }
 
+// ——— Relationship types (Phase 3c). null = unspecified; the UI never forces
+// the question. ———
+export const PARENT_CHILD_TYPES = ["biological", "adopted", "step", "guardian"] as const;
+export const SPOUSE_STATUSES = ["married", "partner", "divorced", "widowed"] as const;
+
+export function normalizeParentChildType(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  if (typeof value === "string" && (PARENT_CHILD_TYPES as readonly string[]).includes(value)) {
+    return value;
+  }
+  throw new RelationshipError("INVALID_RELATIONSHIP_TYPE", 400);
+}
+
+export function normalizeSpouseStatus(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  if (typeof value === "string" && (SPOUSE_STATUSES as readonly string[]).includes(value)) {
+    return value;
+  }
+  throw new RelationshipError("INVALID_SPOUSE_STATUS", 400);
+}
+
+export function normalizeRelationshipDate(value: unknown): Date | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  if (typeof value !== "string") throw new RelationshipError("INVALID_DATE", 400);
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) throw new RelationshipError("INVALID_DATE", 400);
+  return d;
+}
+
 export function assertNonEmptyIds(ids: Array<string | undefined | null>) {
   if (ids.some((v) => !v || !String(v).trim())) {
     throw new RelationshipError("VALIDATION_ERROR", 400);
@@ -220,7 +252,7 @@ export async function assertNoAncestorDescendantSpouse(aId: string, bId: string)
 
 export async function getExactParentChildOrThrow(parentId: string, childId: string) {
   const rows = await sql`
-    SELECT id, "parentId", "childId", "createdAt"
+    SELECT id, "parentId", "childId", "createdAt", "type"
     FROM "ParentChild"
     WHERE "parentId" = ${parentId} AND "childId" = ${childId}
   `;
@@ -236,7 +268,7 @@ export async function getExactSpouseOrThrow(aId: string, bId: string) {
   const [xId, yId] = normalizeSpousePair(aId, bId);
 
   const rows = await sql`
-    SELECT id, "aId", "bId", "createdAt"
+    SELECT id, "aId", "bId", "createdAt", "status", "startDate", "endDate"
     FROM "Spouse"
     WHERE "aId" = ${xId} AND "bId" = ${yId}
   `;

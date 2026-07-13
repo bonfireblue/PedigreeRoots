@@ -47,9 +47,14 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "INVALID_CURSOR" }, { status: 400 });
     }
 
+    // Optional filter: history of a single person (used by the post-claim
+    // "confirm or correct" screen)
+    const targetPersonId = url.searchParams.get("personId");
+
     const rows = await prisma.changeLog.findMany({
       where: {
         familyGraphId,
+        ...(targetPersonId ? { targetPersonId } : {}),
         ...(cursor
           ? {
               OR: [
@@ -69,7 +74,13 @@ export async function GET(req: Request) {
     // Resolve display names in two batched queries: actors (their claimed
     // person in this graph, falling back to email) and target persons.
     const actorIds = [...new Set(page.map((r) => r.actorUserId))];
-    const personIds = [...new Set(page.map((r) => r.targetPersonId).filter((v): v is string => Boolean(v)))];
+    const personIds = [
+      ...new Set(
+        page
+          .flatMap((r) => [r.targetPersonId, (r as { toldByPersonId?: string | null }).toldByPersonId])
+          .filter((v): v is string => Boolean(v))
+      ),
+    ];
 
     const [actorUsers, actorPersons, targetPersons] = await Promise.all([
       prisma.user.findMany({
@@ -109,6 +120,10 @@ export async function GET(req: Request) {
       fieldLabel: r.field ? FIELD_LABELS[r.field] ?? r.field : null,
       oldValue: r.oldValue,
       newValue: r.newValue,
+      toldByPersonId: (r as { toldByPersonId?: string | null }).toldByPersonId ?? null,
+      toldByPersonName: (r as { toldByPersonId?: string | null }).toldByPersonId
+        ? personNameById.get((r as { toldByPersonId?: string | null }).toldByPersonId!) ?? null
+        : null,
     }));
 
     const last = page[page.length - 1];

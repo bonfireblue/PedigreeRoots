@@ -90,3 +90,14 @@ Side note on relationship POSTs: the "auto-link children to spouses" side effect
 - **⚠️ SMS OTP not built** (needs Bon's provider decision — Invitation.phone exists but no sender is wired). Phone-invite links still work when shared manually; only the *sending* is missing.
 - Pre-existing issue left alone: `accept-and-register` can still try to create a user with null email (phone-only + password path) which would violate prod's NOT NULL email constraint — that route predates this work and the new passwordless flow supersedes it in the UI. Flagged rather than changed.
 - `/settings` page added with the optional set-a-password form (never prompted during onboarding).
+
+---
+
+## Phase 3 — implementation notes (2026-07-13, `phase-3-collab-quality` branch)
+
+- **3a Scribe**: `toldByPersonId` added to ChangeLog (additive). Only accepted on *unclaimed* profiles and validated as a live person in the same graph. UI toggle in the editor; feed renders "— told by Rose"; the post-claim confirm screen surfaces scribed edits as "confirm or correct" (via a new `personId` filter on `/api/activity`).
+- **3b Duplicate warning**: `GET /api/people/duplicates` (case-insensitive exact match, caller's graph, max 5). Client checks before create-and-link and shows a non-blocking panel — "Use existing" links the match; "Create anyway" proceeds. Creation is never blocked server-side.
+- **3c Relationship types**: `ParentChild.type`, `Spouse.status/startDate/endDate` (all nullable). Optional on POST, settable later via new PATCH handlers on both relationship routes, exposed as optional dropdowns on parents/children/spouses rows (default "—" = unspecified). Layout untouched — typed links render identically.
+- **3d Per-field privacy**: `Person.fieldVisibility` JSONB. Controllable fields: `birthDate`, `currentLocation`, `grewUpLocation`, `location` (the app has no phone/email person-fields). Claimer-only writes enforced in `people/[id]` PATCH; **every** Person-serializing read path audited: `people/[id]` GET, `tree`, `person-detail`, `profile`, `member-info` now apply `applyFieldVisibility`; the search routes return no controllable fields. Unclaimed profiles ignore fieldVisibility by design (only claimers own privacy).
+- Note: the auto-link side effects (spouse's children) intentionally create untyped (`null`) ParentChild rows — inferring "step" would be guessing.
+- Pre-existing quirk observed, not fixed: `people/[id]` GET previously never returned `currentLocation` at all; it now does (subject to privacy).

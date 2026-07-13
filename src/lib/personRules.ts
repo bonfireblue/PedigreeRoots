@@ -70,6 +70,63 @@ export function canDeletePerson(meId: string, membershipRole: string, row: Perso
   return Boolean(membershipRole);
 }
 
+// ——— Per-field privacy (Phase 3d) ———
+// On claimed profiles the claimer can mark these fields "private" (claimer +
+// admins only). Everything else is always family-visible.
+export const PRIVATE_CONTROLLABLE_FIELDS = [
+  "birthDate",
+  "currentLocation",
+  "grewUpLocation",
+  "location",
+] as const;
+
+export type FieldVisibility = Record<string, "family" | "private">;
+
+// Validate a fieldVisibility patch: only known fields, only known values.
+export function normalizeFieldVisibility(value: unknown): FieldVisibility | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new PersonError("INVALID_FIELD_VISIBILITY", 400);
+  }
+
+  const out: FieldVisibility = {};
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+    if (!(PRIVATE_CONTROLLABLE_FIELDS as readonly string[]).includes(key)) {
+      throw new PersonError("INVALID_FIELD_VISIBILITY", 400);
+    }
+    if (v !== "family" && v !== "private") {
+      throw new PersonError("INVALID_FIELD_VISIBILITY", 400);
+    }
+    if (v === "private") out[key] = v; // "family" is the default — don't store it
+  }
+
+  return out;
+}
+
+// Null out private fields for viewers who aren't the claimer or an admin.
+// Only claimed profiles have claimer-controlled privacy; unclaimed profiles
+// ignore fieldVisibility entirely.
+export function applyFieldVisibility<T extends Record<string, unknown>>(
+  person: T & { claimedByUserId?: string | null; fieldVisibility?: unknown },
+  viewerId: string,
+  isAdmin: boolean
+): T {
+  const claimer = person.claimedByUserId ?? null;
+  if (!claimer || claimer === viewerId || isAdmin) return person;
+
+  const visibility = person.fieldVisibility as FieldVisibility | null | undefined;
+  if (!visibility || typeof visibility !== "object") return person;
+
+  const out: Record<string, unknown> = { ...person };
+  for (const field of PRIVATE_CONTROLLABLE_FIELDS) {
+    if (visibility[field] === "private" && field in out) {
+      out[field] = null;
+    }
+  }
+  return out as T;
+}
+
 export function normalizeTrimmedString(
   value: unknown,
   fieldCode: string,

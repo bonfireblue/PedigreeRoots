@@ -17,7 +17,9 @@ import {
   getMembershipRole,
   getSpouseDeleteWarnings,
   getTwoPeopleForRelationship,
+  normalizeRelationshipDate,
   normalizeSpousePair,
+  normalizeSpouseStatus,
 } from "@/lib/relationshipRules";
 import { logChanges, type ChangeLogEntry } from "@/lib/changeLog";
 
@@ -46,6 +48,9 @@ export async function POST(req: Request) {
     const body = parsed.json;
     const aId = typeof body?.aId === "string" ? body.aId.trim() : "";
     const bId = typeof body?.bId === "string" ? body.bId.trim() : "";
+    const status = normalizeSpouseStatus(body?.status) ?? null;
+    const startDate = normalizeRelationshipDate(body?.startDate) ?? null;
+    const endDate = normalizeRelationshipDate(body?.endDate) ?? null;
 
     assertNonEmptyIds([aId, bId]);
     assertNotSelf(aId, bId);
@@ -64,7 +69,7 @@ export async function POST(req: Request) {
 
     const relationship = await prisma.$transaction(async (tx) => {
       const rel = await tx.spouse.create({
-        data: { aId: xId, bId: yId },
+        data: { aId: xId, bId: yId, status, startDate, endDate },
       });
 
       const entries: ChangeLogEntry[] = [
@@ -122,6 +127,87 @@ export async function POST(req: Request) {
     }
 
     console.error("POST /api/relationships/spouse failed", error);
+    return NextResponse.json({ error: "INTERNAL_SERVER_ERROR" }, { status: 500 });
+  }
+}
+
+// Set/clear status and dates on an existing spouse link (Phase 3c)
+export async function PATCH(req: Request) {
+  try {
+    const me = await requireMe();
+    if (!me) {
+      return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
+    }
+
+    const rl = rateLimit({
+      key: `rel:spouse:patch:${clientKey(req)}`,
+      limit: 60,
+      windowMs: 60_000,
+    });
+
+    if (!rl.ok) {
+      return NextResponse.json({ error: "RATE_LIMITED" }, { status: 429 });
+    }
+
+    const parsed = await readJson(req, 50_000);
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+
+    const body = parsed.json;
+    const aId = typeof body?.aId === "string" ? body.aId.trim() : "";
+    const bId = typeof body?.bId === "string" ? body.bId.trim() : "";
+    const status = normalizeSpouseStatus(body?.status);
+    const startDate = normalizeRelationshipDate(body?.startDate);
+    const endDate = normalizeRelationshipDate(body?.endDate);
+
+    assertNonEmptyIds([aId, bId]);
+    if (status === undefined && startDate === undefined && endDate === undefined) {
+      return NextResponse.json({ error: "NO_UPDATES" }, { status: 400 });
+    }
+
+    const { a, b } = await getTwoPeopleForRelationship(aId, bId);
+    assertSameFamilyGraph(a, b);
+    const membershipRole = await getMembershipRole(me.id, a.familyGraphId!);
+    assertCanEditRelationship(me, membershipRole);
+
+    const relationship = await getExactSpouseOrThrow(aId, bId);
+
+    const data: Record<string, unknown> = {};
+    if (status !== undefined) data.status = status;
+    if (startDate !== undefined) data.startDate = startDate;
+    if (endDate !== undefined) data.endDate = endDate;
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.spouse.update({
+        where: { aId_bId: { aId: relationship.aId, bId: relationship.bId } },
+        data,
+      });
+
+      await logChanges(tx, [
+        {
+          familyGraphId: a.familyGraphId!,
+          actorUserId: me.id,
+          targetPersonId: aId,
+          targetType: "SPOUSE",
+          targetId: String(relationship.id),
+          action: "UPDATE",
+          field: "status",
+          oldValue: (relationship as { status?: string | null }).status ?? null,
+          newValue: status !== undefined ? status : (relationship as { status?: string | null }).status ?? null,
+        },
+      ]);
+
+      return row;
+    });
+
+    return NextResponse.json({ relationship: updated });
+  } catch (error) {
+    if (error instanceof RelationshipError) {
+      return NextResponse.json({ error: error.code }, { status: error.status });
+    }
+
+    console.error("PATCH /api/relationships/spouse failed", error);
     return NextResponse.json({ error: "INTERNAL_SERVER_ERROR" }, { status: 500 });
   }
 }

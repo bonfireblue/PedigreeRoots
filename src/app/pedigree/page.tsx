@@ -60,6 +60,16 @@ type PersonLite = {
   createdAt: string;
   isPrivate: boolean;
   claimedByUserId?: string | null;
+  relationshipType?: string | null; // parent/child links: biological | adopted | step | guardian
+  relationshipStatus?: string | null; // spouse links: married | partner | divorced | widowed
+};
+
+type DuplicateMatch = {
+  id: string;
+  fullName: string;
+  photoUrl: string | null;
+  birthYear: number | null;
+  claimed: boolean;
 };
 
 type PersonDetail = {
@@ -84,6 +94,7 @@ type PersonDetail = {
     isVerified: boolean;
     createdAt: string;
     claimedByUserId?: string | null;
+    fieldVisibility?: Record<string, string> | null; // claimer-only in API response
   };
   parents: PersonLite[];
   children: PersonLite[];
@@ -207,6 +218,12 @@ export default function PedigreePage() {
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  const [myUserId, setMyUserId] = useState<string | null>(null);
+  // Scribe mode (Phase 3a): edits to an unclaimed profile get "told by" attribution
+  const [scribeMode, setScribeMode] = useState(false);
+  // Duplicate warning (Phase 3b): non-blocking; user picks existing or creates anyway
+  const [dupWarning, setDupWarning] = useState<{ name: string; matches: DuplicateMatch[] } | null>(null);
+
   useEffect(() => {
     if (status === "unauthenticated") {
       window.location.href = "/sign-in";
@@ -284,25 +301,23 @@ setEditFirstName(detail.person.firstName ?? "");
 
   useEffect(() => {
     async function initializeTree() {
-      if (initialCenterId) {
-        // If centerId is in URL, use it
-        await loadTree(initialCenterId);
-        setInitializing(false);
-      } else {
-        // Otherwise, fetch user's claimed person and center on them
-        try {
-          const res = await fetch("/api/me");
-          if (res.ok) {
-            const data = await res.json();
-            if (data.claimedPersonId) {
-              await loadTree(data.claimedPersonId);
-            }
+      try {
+        const res = await fetch("/api/me");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.user?.id) setMyUserId(data.user.id);
+          if (initialCenterId) {
+            await loadTree(initialCenterId);
+          } else if (data.claimedPersonId) {
+            await loadTree(data.claimedPersonId);
           }
-        } catch {
-          // Silently fail
-        } finally {
-          setInitializing(false);
+        } else if (initialCenterId) {
+          await loadTree(initialCenterId);
         }
+      } catch {
+        // Silently fail
+      } finally {
+        setInitializing(false);
       }
     }
     void initializeTree();
@@ -459,7 +474,7 @@ setEditFirstName(detail.person.firstName ?? "");
     }
   }
 
-  async function createAndLinkRelationship() {
+  async function createAndLinkRelationship(skipDuplicateCheck = false) {
     const name = newRelativeName.trim();
     if (!selectedId || !name) return;
 
@@ -467,6 +482,20 @@ setEditFirstName(detail.person.firstName ?? "");
     setError(null);
 
     try {
+      // Duplicate warning (Phase 3b): non-blocking — offer the existing match
+      // but never prevent creation
+      if (!skipDuplicateCheck) {
+        const dupRes = await fetch(`/api/people/duplicates?name=${encodeURIComponent(name)}`);
+        const dupData = await dupRes.json().catch(() => ({ matches: [] }));
+        const matches = (dupData?.matches ?? []).filter((m: DuplicateMatch) => m.id !== selectedId);
+        if (dupRes.ok && matches.length > 0) {
+          setDupWarning({ name, matches });
+          setRelBusy(false);
+          return;
+        }
+      }
+      setDupWarning(null);
+
       const newId = await createPersonQuick(name, newRelativePrivate);
 
       if (relMode === "PARENT") {
@@ -494,6 +523,77 @@ setEditFirstName(detail.person.firstName ?? "");
       setError(String(e instanceof Error ? e.message : e));
     } finally {
       setRelBusy(false);
+    }
+  }
+
+  // Duplicate warning: "Use existing" — link the already-existing person
+  async function useExistingFromDuplicate(existingId: string) {
+    setDupWarning(null);
+    setNewRelativeName("");
+    await linkRelationship(existingId);
+  }
+
+  // Set relationship type on a parent/child link (Phase 3c)
+  async function setParentChildType(parentId: string, childId: string, type: string) {
+    setError(null);
+    const res = await fetch("/api/relationships/parent-child", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ parentId, childId, type: type || null }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setError(data?.error ?? `TYPE_UPDATE_FAILED_${res.status}`);
+      return;
+    }
+    if (selectedId) await loadPersonDetail(selectedId);
+  }
+
+  // Set status on a spouse link (Phase 3c)
+  async function setSpouseStatus(spouseId: string, status: string) {
+    if (!selectedId) return;
+    setError(null);
+    const res = await fetch("/api/relationships/spouse", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ aId: selectedId, bId: spouseId, status: status || null }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setError(data?.error ?? `STATUS_UPDATE_FAILED_${res.status}`);
+      return;
+    }
+    await loadPersonDetail(selectedId);
+  }
+
+  // Per-field privacy (Phase 3d): claimer marks a field private/family
+  async function toggleFieldPrivacy(field: string) {
+    if (!selectedId || !personDetail) return;
+    const current = personDetail.person.fieldVisibility ?? {};
+    const next: Record<string, string> = { ...current };
+    if (next[field] === "private") {
+      delete next[field];
+    } else {
+      next[field] = "private";
+    }
+
+    setEditBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/people/${encodeURIComponent(selectedId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ fieldVisibility: next }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data?.error ?? `PRIVACY_UPDATE_FAILED_${res.status}`);
+        return;
+      }
+      await loadPersonDetail(selectedId);
+    } finally {
+      setEditBusy(false);
     }
   }
 
@@ -559,6 +659,10 @@ setEditFirstName(detail.person.firstName ?? "");
         story: editStory.trim() || null,
           interests: editInterests.trim() || null,
           photoUrl: editPhotoUrl || null,
+          // Scribe attribution (Phase 3a): this edit records the profile
+          // person's own knowledge, written down by the current user
+          toldByPersonId:
+            scribeMode && !personDetail?.person.claimedByUserId ? selectedId : undefined,
         }),
       });
 
@@ -1458,6 +1562,71 @@ const relTitle =
                     />
                   </div>
 
+                  {/* Scribe mode (Phase 3a): only for unclaimed profiles */}
+                  {!selectedClaimed && (
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 8,
+                        fontSize: 13,
+                        color: "#374151",
+                        background: scribeMode ? "rgba(45, 90, 61, 0.06)" : "transparent",
+                        border: `1px solid ${scribeMode ? "#a7f3d0" : "#e5e7eb"}`,
+                        borderRadius: 12,
+                        padding: "10px 12px",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={scribeMode}
+                        onChange={(e) => setScribeMode(e.target.checked)}
+                        style={{ marginTop: 2 }}
+                      />
+                      <span>
+                        <strong>{lang === "vi" ? "Tôi đang điền giúp/cùng họ" : "I'm filling this in with/for them"}</strong>
+                        <span style={{ display: "block", color: "#64748b", marginTop: 2 }}>
+                          {lang === "vi"
+                            ? "Các thay đổi sẽ ghi rõ thông tin do họ kể lại, bạn ghi chép."
+                            : "Changes will be recorded as their knowledge, written down by you."}
+                        </span>
+                      </span>
+                    </label>
+                  )}
+
+                  {/* Per-field privacy (Phase 3d): claimer only, on own profile */}
+                  {personDetail.person.claimedByUserId && personDetail.person.claimedByUserId === myUserId && (
+                    <div
+                      style={{
+                        border: "1px solid #e5e7eb",
+                        borderRadius: 12,
+                        padding: "10px 12px",
+                      }}
+                    >
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", marginBottom: 8 }}>
+                        {lang === "vi" ? "Chỉ mình tôi thấy:" : "Keep private (only you and admins see):"}
+                      </div>
+                      <div style={{ display: "grid", gap: 6 }}>
+                        {[
+                          { field: "birthDate", label: lang === "vi" ? "Ngày sinh" : "Birth date" },
+                          { field: "currentLocation", label: lang === "vi" ? "Nơi ở hiện tại" : "Current location" },
+                          { field: "grewUpLocation", label: lang === "vi" ? "Nơi lớn lên" : "Grew up in" },
+                        ].map(({ field, label }) => (
+                          <label key={field} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                            <input
+                              type="checkbox"
+                              checked={(personDetail.person.fieldVisibility ?? {})[field] === "private"}
+                              onChange={() => void toggleFieldPrivacy(field)}
+                              disabled={editBusy}
+                            />
+                            {label}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Actions */}
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <button
@@ -1667,6 +1836,96 @@ const relTitle =
               >
                 {relBusy ? t.working : t.createAndLink}
               </button>
+
+              {/* Duplicate warning (Phase 3b): non-blocking */}
+              {dupWarning && (
+                <div
+                  style={{
+                    border: "1px solid #fde68a",
+                    background: "#fffbeb",
+                    borderRadius: 12,
+                    padding: 12,
+                    display: "grid",
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#92400e" }}>
+                    {lang === "vi"
+                      ? `Đã có người tên "${dupWarning.name}" trong cây:`
+                      : `Someone named "${dupWarning.name}" already exists in this tree:`}
+                  </div>
+                  {dupWarning.matches.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => void useExistingFromDuplicate(m.id)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        border: "1px solid #e5e7eb",
+                        background: "#ffffff",
+                        borderRadius: 10,
+                        padding: "8px 10px",
+                        cursor: "pointer",
+                        textAlign: "left",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: "50%",
+                          background: "#e2e8f0",
+                          overflow: "hidden",
+                          flexShrink: 0,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        {m.photoUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={`/api/file?pathname=${encodeURIComponent(m.photoUrl)}`}
+                            alt=""
+                            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                          />
+                        ) : (
+                          <span style={{ color: "#94a3b8", fontWeight: 700 }}>{m.fullName[0]}</span>
+                        )}
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 700, color: "#111827", fontSize: 14 }}>
+                          {lang === "vi" ? "Dùng người có sẵn: " : "Use existing: "}
+                          {m.fullName}
+                        </div>
+                        <div style={{ fontSize: 12, color: "#64748b" }}>
+                          {m.birthYear ? `b. ${m.birthYear} · ` : ""}
+                          {m.claimed ? (lang === "vi" ? "Đã nhận" : "Claimed") : lang === "vi" ? "Chưa nhận" : "Unclaimed"}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      type="button"
+                      onClick={() => void createAndLinkRelationship(true)}
+                      disabled={relBusy}
+                      style={{ ...actionButtonStyle(false), fontSize: 13 }}
+                    >
+                      {lang === "vi" ? "Vẫn tạo mới" : "Create anyway"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDupWarning(null)}
+                      style={{ ...actionButtonStyle(false), fontSize: 13 }}
+                    >
+                      {t.cancel ?? "Cancel"}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div
@@ -1788,6 +2047,14 @@ const relTitle =
               onSelect={(id) => void selectPersonInCurrentTree(id)}
               onDelete={selectedId ? (parentId) => void deleteParentChildRelationship(parentId, selectedId) : undefined}
               emptyText={t.none}
+              typeOptions={[
+                { value: "biological", label: lang === "vi" ? "Ruột" : "Biological" },
+                { value: "adopted", label: lang === "vi" ? "Nuôi" : "Adopted" },
+                { value: "step", label: lang === "vi" ? "Kế" : "Step" },
+                { value: "guardian", label: lang === "vi" ? "Giám hộ" : "Guardian" },
+              ]}
+              typeValue={(p) => p.relationshipType}
+              onTypeChange={selectedId ? (parentId, v) => void setParentChildType(parentId, selectedId, v) : undefined}
             />
 
             <RelationshipSection
@@ -1796,6 +2063,14 @@ const relTitle =
               onSelect={(id) => void selectPersonInCurrentTree(id)}
               onDelete={(spouseId) => void deleteSpouseRelationship(spouseId)}
               emptyText={t.none}
+              typeOptions={[
+                { value: "married", label: lang === "vi" ? "Kết hôn" : "Married" },
+                { value: "partner", label: lang === "vi" ? "Bạn đời" : "Partner" },
+                { value: "divorced", label: lang === "vi" ? "Ly hôn" : "Divorced" },
+                { value: "widowed", label: lang === "vi" ? "Góa" : "Widowed" },
+              ]}
+              typeValue={(p) => p.relationshipStatus}
+              onTypeChange={(spouseId, v) => void setSpouseStatus(spouseId, v)}
             />
 
             <RelationshipSection
@@ -1804,6 +2079,14 @@ const relTitle =
               onSelect={(id) => void selectPersonInCurrentTree(id)}
               onDelete={selectedId ? (childId) => void deleteParentChildRelationship(selectedId, childId) : undefined}
               emptyText={t.none}
+              typeOptions={[
+                { value: "biological", label: lang === "vi" ? "Ruột" : "Biological" },
+                { value: "adopted", label: lang === "vi" ? "Nuôi" : "Adopted" },
+                { value: "step", label: lang === "vi" ? "Kế" : "Step" },
+                { value: "guardian", label: lang === "vi" ? "Giám hộ" : "Guardian" },
+              ]}
+              typeValue={(p) => p.relationshipType}
+              onTypeChange={selectedId ? (childId, v) => void setParentChildType(selectedId, childId, v) : undefined}
             />
 
             <RelationshipSection
@@ -1904,12 +2187,19 @@ function RelationshipSection({
   onSelect,
   onDelete,
   emptyText = "None",
+  typeOptions,
+  typeValue,
+  onTypeChange,
 }: {
   title: string;
   people: PersonLite[];
   onSelect: (id: string) => void;
   onDelete?: (id: string) => void;
   emptyText?: string;
+  // Optional relationship-type dropdown (Phase 3c) — always optional, never forced
+  typeOptions?: { value: string; label: string }[];
+  typeValue?: (p: PersonLite) => string | null | undefined;
+  onTypeChange?: (id: string, value: string) => void;
 }) {
   return (
     <div style={{ marginTop: 16 }}>
@@ -1956,6 +2246,30 @@ function RelationshipSection({
                   {p.isPrivate ? "Private" : "Public"}
                 </div>
               </button>
+              {typeOptions && onTypeChange && (
+                <select
+                  value={typeValue?.(p) ?? ""}
+                  onChange={(e) => onTypeChange(p.id, e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    fontSize: 12,
+                    borderRadius: 8,
+                    border: "1px solid #d1d5db",
+                    padding: "6px 6px",
+                    background: "#ffffff",
+                    color: "#374151",
+                    flexShrink: 0,
+                    maxWidth: 110,
+                  }}
+                >
+                  <option value="">—</option>
+                  {typeOptions.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              )}
               {onDelete && (
                 <button
                   type="button"

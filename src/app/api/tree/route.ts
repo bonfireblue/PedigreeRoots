@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { sql } from "@/lib/neon-db";
 import { requireMe } from "@/lib/authz";
 import { rateLimit, clientKey } from "@/lib/rateLimit";
+import { applyFieldVisibility } from "@/lib/personRules";
 
 type NodeRow = {
   id: string;
@@ -217,7 +218,7 @@ export async function GET(req: Request) {
     const nodesAll = await sql`
       SELECT id, "fullName", "isPrivate", "createdById", "createdAt", bio, location,
              "grewUpLocation", "birthDate", "deathDate", "photoUrl", occupation,
-             "proudOf", interests, "claimedByUserId", "familyGraphId"
+             "proudOf", interests, "claimedByUserId", "familyGraphId", "fieldVisibility"
       FROM "Person"
       WHERE id = ANY(${visitedArray})
         AND "familyGraphId" = ${familyGraphId}
@@ -251,22 +252,27 @@ export async function GET(req: Request) {
       centerId,
       depth,
       limit,
-      nodes: nodes.map((n) => ({
-        id: n.id,
-        fullName: n.fullName,
-        isPrivate: n.isPrivate,
-        createdAt: n.createdAt,
-        bio: n.bio,
-        location: n.location,
-        grewUpLocation: n.grewUpLocation,
-        birthDate: n.birthDate,
-        deathDate: n.deathDate,
-        photoUrl: n.photoUrl,
-        occupation: n.occupation,
-        proudOf: n.proudOf,
-        interests: n.interests,
-        claimedByUserId: n.claimedByUserId,
-      })),
+      nodes: nodes.map((raw) => {
+        // Per-field privacy (Phase 3d): claimer-marked private fields are
+        // hidden from everyone but the claimer and admins
+        const n = applyFieldVisibility(raw as unknown as Record<string, unknown> & { claimedByUserId?: string | null }, me.id, me.isAdmin) as unknown as NodeRow;
+        return {
+          id: n.id,
+          fullName: n.fullName,
+          isPrivate: n.isPrivate,
+          createdAt: n.createdAt,
+          bio: n.bio,
+          location: n.location,
+          grewUpLocation: n.grewUpLocation,
+          birthDate: n.birthDate,
+          deathDate: n.deathDate,
+          photoUrl: n.photoUrl,
+          occupation: n.occupation,
+          proudOf: n.proudOf,
+          interests: n.interests,
+          claimedByUserId: n.claimedByUserId,
+        };
+      }),
       edges: {
         parentChild: parentChildEdges,
         spouse: spouseEdges,
