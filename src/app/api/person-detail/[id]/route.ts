@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db";
 import { rateLimit, clientKey } from "@/lib/rateLimit";
 import { readJson } from "@/lib/body";
 import { requireMe } from "@/lib/authz";
-import { canEditPerson } from "@/lib/personRules";
+import { applyFieldVisibility, canEditPerson } from "@/lib/personRules";
 import { logPersonUpdate } from "@/lib/changeLog";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -87,12 +87,14 @@ export async function GET(req: Request, ctx: Ctx) {
     });
     const canEdit = membership ? canEditPerson(me.id, membership.role, person) : false;
 
+    const visiblePerson = applyFieldVisibility(person as unknown as Record<string, unknown> & { claimedByUserId?: string | null }, me.id, me.isAdmin) as typeof person;
+
     return NextResponse.json({
       person: {
         id: person.id,
         fullName: person.fullName,
         gender: person.gender,
-        birthDate: person.birthDate,
+        birthDate: visiblePerson.birthDate,
         deathDate: person.deathDate,
         isPrivate: person.isPrivate,
         isVerified: person.isVerified,

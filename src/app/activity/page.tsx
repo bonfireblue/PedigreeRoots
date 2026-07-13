@@ -15,6 +15,7 @@ type ActivityItem = {
   fieldLabel: string | null;
   oldValue: string | null;
   newValue: string | null;
+  toldByPersonName: string | null;
 };
 
 function describe(item: ActivityItem): string {
@@ -186,6 +187,9 @@ export default function ActivityPage() {
                 >
                   <div style={{ fontSize: 15, color: "#111827" }}>
                     <strong>{item.actorName}</strong> {describe(item)}
+                    {item.toldByPersonName ? (
+                      <span style={{ color: "#64748b" }}> — told by {item.toldByPersonName}</span>
+                    ) : null}
                     {item.field && item.oldValue !== null && item.newValue !== null &&
                      item.targetType === "PERSON" && item.field !== "claimedByUserId" ? (
                       <div style={{ marginTop: 2, fontSize: 13, color: "#64748b" }}>

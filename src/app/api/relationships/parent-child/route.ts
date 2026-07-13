@@ -18,6 +18,7 @@ import {
   getMembershipRole,
   getParentChildDeleteWarnings,
   getTwoPeopleForRelationship,
+  normalizeParentChildType,
 } from "@/lib/relationshipRules";
 import { logChanges, type ChangeLogEntry } from "@/lib/changeLog";
 
@@ -46,6 +47,7 @@ export async function POST(req: Request) {
     const body = parsed.json;
     const parentId = typeof body?.parentId === "string" ? body.parentId.trim() : "";
     const childId = typeof body?.childId === "string" ? body.childId.trim() : "";
+    const relType = normalizeParentChildType(body?.type) ?? null;
 
     assertNonEmptyIds([parentId, childId]);
     assertNotSelf(parentId, childId);
@@ -74,7 +76,7 @@ export async function POST(req: Request) {
 
     const relationship = await prisma.$transaction(async (tx) => {
       const rel = await tx.parentChild.create({
-        data: { parentId, childId },
+        data: { parentId, childId, type: relType },
       });
 
       const entries: ChangeLogEntry[] = [
@@ -122,6 +124,80 @@ export async function POST(req: Request) {
     }
 
     console.error("POST /api/relationships/parent-child failed", error);
+    return NextResponse.json({ error: "INTERNAL_SERVER_ERROR" }, { status: 500 });
+  }
+}
+
+// Set/clear the relationship type on an existing link (Phase 3c)
+export async function PATCH(req: Request) {
+  try {
+    const me = await requireMe();
+    if (!me) {
+      return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
+    }
+
+    const rl = rateLimit({
+      key: `rel:parent-child:patch:${clientKey(req)}`,
+      limit: 60,
+      windowMs: 60_000,
+    });
+
+    if (!rl.ok) {
+      return NextResponse.json({ error: "RATE_LIMITED" }, { status: 429 });
+    }
+
+    const parsed = await readJson(req, 50_000);
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+
+    const body = parsed.json;
+    const parentId = typeof body?.parentId === "string" ? body.parentId.trim() : "";
+    const childId = typeof body?.childId === "string" ? body.childId.trim() : "";
+    const relType = normalizeParentChildType(body?.type);
+
+    assertNonEmptyIds([parentId, childId]);
+    if (relType === undefined) {
+      return NextResponse.json({ error: "NO_UPDATES" }, { status: 400 });
+    }
+
+    const { a: parent, b: child } = await getTwoPeopleForRelationship(parentId, childId);
+    assertSameFamilyGraph(parent, child);
+    const membershipRole = await getMembershipRole(me.id, parent.familyGraphId!);
+    assertCanEditRelationship(me, membershipRole);
+
+    const relationship = await getExactParentChildOrThrow(parentId, childId);
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.parentChild.update({
+        where: { parentId_childId: { parentId, childId } },
+        data: { type: relType },
+      });
+
+      await logChanges(tx, [
+        {
+          familyGraphId: parent.familyGraphId!,
+          actorUserId: me.id,
+          targetPersonId: childId,
+          targetType: "PARENT_CHILD",
+          targetId: String(relationship.id),
+          action: "UPDATE",
+          field: "type",
+          oldValue: (relationship as { type?: string | null }).type ?? null,
+          newValue: relType,
+        },
+      ]);
+
+      return row;
+    });
+
+    return NextResponse.json({ relationship: updated });
+  } catch (error) {
+    if (error instanceof RelationshipError) {
+      return NextResponse.json({ error: error.code }, { status: error.status });
+    }
+
+    console.error("PATCH /api/relationships/parent-child failed", error);
     return NextResponse.json({ error: "INTERNAL_SERVER_ERROR" }, { status: 500 });
   }
 }

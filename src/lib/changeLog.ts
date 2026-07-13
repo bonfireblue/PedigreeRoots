@@ -16,6 +16,7 @@ export type ChangeLogEntry = {
   field?: string | null;
   oldValue?: string | null;
   newValue?: string | null;
+  toldByPersonId?: string | null; // scribe attribution (Phase 3a)
 };
 
 export const CHANGE_VALUE_MAX_LEN = 500;
@@ -85,6 +86,7 @@ export async function logChanges(db: ChangeLogWriter, entries: ChangeLogEntry[])
       field: e.field ?? null,
       oldValue: e.oldValue ?? null,
       newValue: e.newValue ?? null,
+      toldByPersonId: e.toldByPersonId ?? null,
     })),
   });
 }
@@ -99,6 +101,7 @@ export async function logPersonUpdate(
     personId: string;
     before: Record<string, unknown>;
     patch: Record<string, unknown>;
+    toldByPersonId?: string | null;
   }
 ): Promise<number> {
   const changes = diffPersonFields(params.before, params.patch);
@@ -115,6 +118,7 @@ export async function logPersonUpdate(
       field: c.field,
       oldValue: c.oldValue,
       newValue: c.newValue,
+      toldByPersonId: params.toldByPersonId ?? null,
     }))
   );
 

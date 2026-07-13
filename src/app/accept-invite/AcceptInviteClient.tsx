@@ -91,6 +91,8 @@ export default function AcceptInviteClient() {
   const [email, setEmail] = useState("");
   const [confirmName, setConfirmName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Scribed history (Phase 3a): what family already filled in for this person
+  const [scribedNotes, setScribedNotes] = useState<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -181,9 +183,35 @@ export default function AcceptInviteClient() {
         return;
       }
 
+      await loadScribedHistory();
       setStage("confirm");
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Surface family-scribed details as "confirm or correct" (Phase 3a)
+  async function loadScribedHistory() {
+    if (!preview) return;
+    try {
+      const res = await fetch(
+        `/api/activity?personId=${encodeURIComponent(preview.targetPerson.id)}`
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const notes: string[] = [];
+      for (const item of data.items ?? []) {
+        if (item.targetType === "PERSON" && item.action === "UPDATE" && item.fieldLabel && item.newValue) {
+          const by = item.toldByPersonName
+            ? `${item.actorName} (told by ${item.toldByPersonName})`
+            : item.actorName;
+          notes.push(`${item.fieldLabel}: "${item.newValue}" — ${vi ? "ghi bởi" : "recorded by"} ${by}`);
+        }
+        if (notes.length >= 5) break;
+      }
+      setScribedNotes(notes);
+    } catch {
+      // non-essential; skip silently
     }
   }
 
@@ -204,6 +232,7 @@ export default function AcceptInviteClient() {
           setError(String(data?.error ?? (vi ? "Không thành công." : "Something went wrong.")));
           return;
         }
+        await loadScribedHistory();
         setStage("confirm");
       } finally {
         setLoading(false);
@@ -407,6 +436,30 @@ export default function AcceptInviteClient() {
           <p style={{ opacity: 0.7, fontSize: 18, lineHeight: 1.5, marginBottom: 24 }}>
             {vi ? "Bạn có thể sửa lại nếu cần." : "You can fix it if it's not quite right."}
           </p>
+
+          {scribedNotes.length > 0 && (
+            <div
+              style={{
+                border: "1px solid #d1d5db",
+                borderRadius: 14,
+                padding: 16,
+                marginBottom: 20,
+                fontSize: 16,
+                lineHeight: 1.6,
+              }}
+            >
+              <div style={{ fontWeight: 700, marginBottom: 8 }}>
+                {vi
+                  ? "Gia đình đã điền giúp bạn một số thông tin — hãy kiểm tra và sửa nếu chưa đúng:"
+                  : "Your family already filled in a few things for you — please check them and fix anything that's wrong:"}
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 20, opacity: 0.85 }}>
+                {scribedNotes.map((n, i) => (
+                  <li key={i}>{n}</li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <form onSubmit={(e) => void saveNameAndFinish(e)} style={{ display: "grid", gap: 14 }}>
             <input

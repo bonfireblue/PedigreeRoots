@@ -5,7 +5,7 @@ import { prisma } from "@/lib/db";
 import { rateLimit, clientKey } from "@/lib/rateLimit";
 import { readJson } from "@/lib/body";
 import { requireMe } from "@/lib/authz";
-import { canEditPerson } from "@/lib/personRules";
+import { applyFieldVisibility, canEditPerson } from "@/lib/personRules";
 import { logPersonUpdate } from "@/lib/changeLog";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -22,7 +22,7 @@ export async function GET(req: Request, ctx: Ctx) {
 
     const personRows = await sql`
       SELECT id, "fullName", gender, "birthDate", "deathDate", "isPrivate",
-             "isVerified", "claimedByUserId", "createdById", "photoUrl", "familyGraphId"
+             "isVerified", "claimedByUserId", "createdById", "photoUrl", "familyGraphId", "fieldVisibility"
       FROM "Person"
       WHERE id = ${id} AND "deletedAt" IS NULL
     `;
@@ -78,12 +78,14 @@ export async function GET(req: Request, ctx: Ctx) {
       AND p."deletedAt" IS NULL
     `;
 
+    const visiblePerson = applyFieldVisibility(person as Record<string, unknown> & { claimedByUserId?: string | null }, me.id, me.isAdmin) as typeof person;
+
     return NextResponse.json({
       person: {
         id: person.id,
         fullName: person.fullName,
         gender: person.gender,
-        birthDate: person.birthDate,
+        birthDate: visiblePerson.birthDate,
         deathDate: person.deathDate,
         isPrivate: person.isPrivate,
         isVerified: person.isVerified,

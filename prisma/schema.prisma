@@ -157,6 +157,7 @@ model Person {
   isVerified      Boolean?      @default(false)
   gender          String?
   story           String?
+  fieldVisibility Json? // per-field privacy for claimed profiles: { field: "family" | "private" }
   invitations     Invitation[]  @relation("PersonInvitations")
   parents         ParentChild[] @relation("ChildParents")
   children        ParentChild[] @relation("ParentChildren")
@@ -179,6 +180,7 @@ model ParentChild {
   createdAt DateTime @default(now())
   parentId  String
   childId   String
+  type      String? // biological | adopted | step | guardian (null = unspecified)
   child     Person   @relation("ChildParents", fields: [childId], references: [id], onDelete: Cascade)
   parent    Person   @relation("ParentChildren", fields: [parentId], references: [id], onDelete: Cascade)
 
@@ -188,10 +190,13 @@ model ParentChild {
 }
 
 model Spouse {
-  id        String   @id @default(uuid())
-  createdAt DateTime @default(now())
+  id        String    @id @default(uuid())
+  createdAt DateTime  @default(now())
   aId       String
   bId       String
+  status    String? // married | partner | divorced | widowed (null = unspecified)
+  startDate DateTime?
+  endDate   DateTime?
   a         Person   @relation("SpouseA", fields: [aId], references: [id], onDelete: Cascade)
   b         Person   @relation("SpouseB", fields: [bId], references: [id], onDelete: Cascade)
 
@@ -222,6 +227,7 @@ model ChangeLog {
   field          String?
   oldValue       String?
   newValue       String?
+  toldByPersonId String? // scribe attribution: whose knowledge this edit records
   createdAt      DateTime @default(now())
 
   @@index([familyGraphId, createdAt])

@@ -15,7 +15,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { personId, firstName, lastName, fullName, gender, birthDate, deathDate, grewUpLocation, occupation, proudOf, story, interests, photoUrl } = await request.json();
+    const { personId, firstName, lastName, fullName, gender, birthDate, deathDate, grewUpLocation, occupation, proudOf, story, interests, photoUrl, toldByPersonId } = await request.json();
 
     if (!personId) {
       return NextResponse.json({ error: "Missing personId" }, { status: 400 });
@@ -41,6 +41,18 @@ export async function POST(request: Request) {
 
     if (!canEditPerson(me.id, membership.role, existing)) {
       return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
+    }
+
+    // Scribe attribution (Phase 3a): "told by Rose, recorded by <actor>".
+    // Only meaningful on unclaimed profiles, and the source person must be a
+    // real node in the same graph.
+    let scribeSourceId: string | null = null;
+    if (typeof toldByPersonId === "string" && toldByPersonId.trim() && !existing.claimedByUserId) {
+      const source = await prisma.person.findFirst({
+        where: { id: toldByPersonId.trim(), familyGraphId: existing.familyGraphId, deletedAt: null },
+        select: { id: true },
+      });
+      if (source) scribeSourceId = source.id;
     }
 
     const updateData: any = {};
@@ -75,6 +87,7 @@ export async function POST(request: Request) {
         personId,
         before: existing as unknown as Record<string, unknown>,
         patch: updateData,
+        toldByPersonId: scribeSourceId,
       });
 
       return row;

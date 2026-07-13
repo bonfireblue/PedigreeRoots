@@ -5,10 +5,12 @@ import { readJson } from "@/lib/body";
 import { requireMe } from "@/lib/authz";
 import {
   PersonError,
+  applyFieldVisibility,
   buildPersonPatch,
   canDeletePerson,
   canEditPerson,
   canViewPerson,
+  normalizeFieldVisibility,
 } from "@/lib/personRules";
 import { logChanges, logPersonUpdate } from "@/lib/changeLog";
 
@@ -117,21 +119,27 @@ export async function GET(req: Request, ctx: Ctx) {
   }
 
   const parents = person.parents
-    .map((row) => row.parent)
-    .filter((p) => !p.deletedAt)
-    .filter((p) => canViewPerson(me.id, me.isAdmin, membership.role, p))
-    .map(slim);
+    .filter((row) => !row.parent.deletedAt)
+    .filter((row) => canViewPerson(me.id, me.isAdmin, membership.role, row.parent))
+    .map((row) => ({ ...slim(row.parent), relationshipType: (row as any).type ?? null }));
 
   const children = person.children
-    .map((row) => row.child)
-    .filter((p) => !p.deletedAt)
-    .filter((p) => canViewPerson(me.id, me.isAdmin, membership.role, p))
-    .map(slim);
+    .filter((row) => !row.child.deletedAt)
+    .filter((row) => canViewPerson(me.id, me.isAdmin, membership.role, row.child))
+    .map((row) => ({ ...slim(row.child), relationshipType: (row as any).type ?? null }));
 
-  const spouses = [...person.spousesA.map((row) => row.b), ...person.spousesB.map((row) => row.a)]
-    .filter((p) => !p.deletedAt)
-    .filter((p) => canViewPerson(me.id, me.isAdmin, membership.role, p))
-    .map(slim);
+  const spouses = [
+    ...person.spousesA.map((row) => ({ p: row.b, rel: row as any })),
+    ...person.spousesB.map((row) => ({ p: row.a, rel: row as any })),
+  ]
+    .filter(({ p }) => !p.deletedAt)
+    .filter(({ p }) => canViewPerson(me.id, me.isAdmin, membership.role, p))
+    .map(({ p, rel }) => ({
+      ...slim(p),
+      relationshipStatus: rel.status ?? null,
+      relationshipStartDate: rel.startDate ?? null,
+      relationshipEndDate: rel.endDate ?? null,
+    }));
 
   // Get siblings (people who share at least one parent)
   const parentIds = person.parents.map((row) => row.parent.id);
@@ -157,6 +165,14 @@ export async function GET(req: Request, ctx: Ctx) {
       .map(slim);
   }
 
+  // Per-field privacy (Phase 3d): hide claimer-marked private fields from
+  // everyone but the claimer and admins
+  const visiblePerson = applyFieldVisibility(
+    person as unknown as Record<string, unknown> & { claimedByUserId?: string | null },
+    me.id,
+    me.isAdmin
+  ) as unknown as typeof person;
+
   return NextResponse.json({
     person: {
       id: person.id,
@@ -165,10 +181,11 @@ export async function GET(req: Request, ctx: Ctx) {
       lastName: (person as any).lastName ?? null,
       gender: (person as PersonRow).gender,
       bio: person.bio,
-      location: person.location,
-      birthDate: person.birthDate ? person.birthDate.toISOString() : null,
+      location: visiblePerson.location,
+      birthDate: visiblePerson.birthDate ? visiblePerson.birthDate.toISOString() : null,
       deathDate: person.deathDate ? person.deathDate.toISOString() : null,
-      grewUpLocation: (person as any).grewUpLocation ?? null,
+      grewUpLocation: (visiblePerson as any).grewUpLocation ?? null,
+      currentLocation: (visiblePerson as any).currentLocation ?? null,
       occupation: (person as any).occupation ?? null,
       proudOf: (person as any).proudOf ?? null,
       story: (person as any).story ?? null,
@@ -178,6 +195,8 @@ export async function GET(req: Request, ctx: Ctx) {
       isVerified: (person as PersonRow).isVerified,
       createdAt: person.createdAt.toISOString(),
       claimedByUserId: person.claimedByUserId,
+      // Claimer sees (and can edit) their privacy settings; others don't
+      fieldVisibility: person.claimedByUserId === me.id ? (person as any).fieldVisibility ?? null : null,
       deletedAt: person.deletedAt ? person.deletedAt.toISOString() : null,
       purgeAfter: person.purgeAfter ? person.purgeAfter.toISOString() : null,
     },
@@ -216,7 +235,38 @@ export async function PATCH(req: Request, ctx: Ctx) {
       return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
     }
 
-    const data = buildPersonPatch(parsed.json);
+    // Per-field privacy (Phase 3d): only the claimer may change visibility
+    const fieldVisibility = normalizeFieldVisibility(parsed.json?.fieldVisibility);
+    if (fieldVisibility !== undefined && existing.claimedByUserId !== me.id) {
+      return NextResponse.json({ error: "FIELD_VISIBILITY_CLAIMER_ONLY" }, { status: 403 });
+    }
+
+    let data: Record<string, unknown>;
+    try {
+      data = buildPersonPatch(parsed.json);
+    } catch (e) {
+      // A visibility-only PATCH has no profile fields — that's fine
+      if (e instanceof PersonError && e.code === "NO_VALID_FIELDS" && fieldVisibility !== undefined) {
+        data = {};
+      } else {
+        throw e;
+      }
+    }
+    if (fieldVisibility !== undefined) {
+      data.fieldVisibility = fieldVisibility;
+    }
+
+    // Scribe attribution (Phase 3a) — unclaimed profiles only, source must be
+    // a live person in the same graph
+    let scribeSourceId: string | null = null;
+    const rawToldBy = parsed.json?.toldByPersonId;
+    if (typeof rawToldBy === "string" && rawToldBy.trim() && !existing.claimedByUserId) {
+      const source = await prisma.person.findFirst({
+        where: { id: rawToldBy.trim(), familyGraphId: existing.familyGraphId, deletedAt: null },
+        select: { id: true },
+      });
+      if (source) scribeSourceId = source.id;
+    }
 
     const updated = await prisma.$transaction(async (tx) => {
       const row = await tx.person.update({
@@ -230,6 +280,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
         personId: id,
         before: existing as unknown as Record<string, unknown>,
         patch: data,
+        toldByPersonId: scribeSourceId,
       });
 
       return row;
